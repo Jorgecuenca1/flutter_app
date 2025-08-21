@@ -56,6 +56,12 @@ class ApiClient {
 
   Future<Map<String, dynamic>> getJson(String path) async {
     final r = await _client.get(Uri.parse('$baseUrl$path'), headers: _headers(jsonBody: false));
+    if (r.statusCode >= 400) {
+      throw Exception('GET ' + path + ' failed: ' + r.statusCode.toString() + ' ' + r.body);
+    }
+    if (r.body.startsWith('<!DOCTYPE') || r.body.startsWith('<html')) {
+      throw Exception('Received HTML instead of JSON. Check authentication.');
+    }
     return jsonDecode(r.body) as Map<String, dynamic>;
   }
 
@@ -105,6 +111,27 @@ class ApiClient {
     });
   }
 
+  Future<Map<String, dynamic>> votanteDetail(String candId, String votId) async {
+    final data = await getJson('/api/candidaturas/' + candId + '/votantes/' + votId + '/');
+    return data['votante'] as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> putJson(String path, Map<String, dynamic> body) async {
+    final r = await _client.put(
+      Uri.parse('$baseUrl$path'),
+      headers: _headers(),
+      body: jsonEncode(body),
+    );
+    if (r.statusCode >= 400) {
+      throw Exception('PUT ' + path + ' failed: ' + r.statusCode.toString() + ' ' + r.body);
+    }
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
+  Future<void> votanteUpdate(String candId, String votId, Map<String, dynamic> payload) async {
+    await putJson('/api/candidaturas/' + candId + '/votantes/' + votId + '/', payload);
+  }
+
   Future<void> agendaCreate(String candId, Map<String, dynamic> payload) async {
     await postJson('/api/candidaturas/' + candId + '/agendas/', payload);
   }
@@ -115,8 +142,8 @@ class ApiClient {
 }
 
 final apiProvider = Provider<ApiClient>((ref) {
-  // API de producción
-  const baseUrl = 'https://mivoto.corpofuturo.org';
+  // API local para desarrollo
+  const baseUrl = 'http://127.0.0.1:8000';
   return ApiClient(baseUrl);
 });
 

@@ -3,6 +3,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'main.dart';
 import 'services/local_storage_service.dart';
 import 'services/sync_service.dart';
+import 'votante_detail.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
 class VotantesScreen extends ConsumerStatefulWidget {
@@ -53,6 +54,19 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
     _load();
   }
 
+  void _openDetail(Map<String, dynamic> v) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VotanteDetailScreen(
+          candId: widget.candId,
+          candName: widget.candName,
+          votanteId: v['id'] as String,
+        ),
+      ),
+    );
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -76,6 +90,7 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
                           icon: const Icon(Icons.verified_user),
                           onPressed: () => _openAssignRole(v),
                         ),
+                        onTap: () => _openDetail(v),
                       );
                     },
                   ),
@@ -112,6 +127,19 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
   bool _saving = false;
   Map<String, dynamic>? _lookups;
   final _roles = const ['Delegado','Verificado','Publicidad','Logística','Agendador'];
+  
+  // Campos de jerarquía de liderazgo
+  String? _nivelJefe;
+  int? _jefeCiudadId;
+  int? _jefeMunicipioId;
+  int? _jefeComunaId;
+  int? _jefePuestoVotacionId;
+  final _nivelesJefe = const [
+    {'value': 'departamental', 'label': 'Departamental'},
+    {'value': 'municipal', 'label': 'Municipal'},
+    {'value': 'comuna', 'label': 'Comuna'},
+    {'value': 'puesto_votacion', 'label': 'Puesto de Votación'},
+  ];
 
   @override
   void initState() {
@@ -141,6 +169,12 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
       'es_jefe': _esJefe,
       'username': _usernameCtrl.text.trim(),
       'password': _passwordCtrl.text,
+      // Campos de jerarquía de liderazgo
+      'nivel_jefe': _nivelJefe,
+      'jefe_ciudad_id': _jefeCiudadId,
+      'jefe_municipio_id': _jefeMunicipioId,
+      'jefe_comuna_id': _jefeComunaId,
+      'jefe_puesto_votacion_id': _jefePuestoVotacionId,
     };
     try {
       final conn = await Connectivity().checkConnectivity();
@@ -169,6 +203,13 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
     final ciudades = (_lookups?['ciudades'] as List?) ?? [];
     final municipios = (_lookups?['municipios'] as List?)?.where((m) => _ciudadId == null || m['ciudad_id'] == _ciudadId).toList() ?? [];
     final comunas = (_lookups?['comunas'] as List?)?.where((c) => _municipioId == null || c['municipio_id'] == _municipioId).toList() ?? [];
+    final puestosVotacion = (_lookups?['puestos_votacion'] as List?)?.where((p) => _jefeComunaId == null || p['comuna_id'] == _jefeComunaId).toList() ?? [];
+    
+    // Para jerarquía de liderazgo
+    final jefeCiudades = (_lookups?['ciudades'] as List?) ?? [];
+    final jefeMunicipios = (_lookups?['municipios'] as List?)?.where((m) => _jefeCiudadId == null || m['ciudad_id'] == _jefeCiudadId).toList() ?? [];
+    final jefeComunas = (_lookups?['comunas'] as List?)?.where((c) => _jefeMunicipioId == null || c['municipio_id'] == _jefeMunicipioId).toList() ?? [];
+    final jefePuestos = (_lookups?['puestos_votacion'] as List?)?.where((p) => _jefeComunaId == null || p['comuna_id'] == _jefeComunaId).toList() ?? [];
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -212,6 +253,150 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
               Checkbox(value: _esJefe, onChanged: (v)=> setState(()=> _esJefe = v ?? false)),
               const Text('Es jefe (opcional)')
             ]),
+            
+            // Campos de jerarquía de liderazgo (solo si es jefe)
+            if (_esJefe) ...[
+              const SizedBox(height: 8),
+              const Divider(),
+              const Text('Jerarquía de Liderazgo', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              
+              DropdownButtonFormField<String>(
+                value: _nivelJefe,
+                items: _nivelesJefe.map((n) => DropdownMenuItem(
+                  value: n['value'] as String, 
+                  child: Text(n['label'] as String)
+                )).toList(),
+                onChanged: (v) => setState(() {
+                  _nivelJefe = v;
+                  // Limpiar campos dependientes
+                  _jefeCiudadId = null;
+                  _jefeMunicipioId = null;
+                  _jefeComunaId = null;
+                  _jefePuestoVotacionId = null;
+                }),
+                decoration: const InputDecoration(labelText: 'Nivel de Jefe'),
+              ),
+              
+              // Departamental: Solo ciudad
+              if (_nivelJefe == 'departamental') ...[
+                DropdownButtonFormField<int>(
+                  value: _jefeCiudadId,
+                  items: jefeCiudades.map<DropdownMenuItem<int>>((c) => 
+                    DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() => _jefeCiudadId = v),
+                  decoration: const InputDecoration(labelText: 'Ciudad/Departamento'),
+                ),
+              ],
+              
+              // Municipal: Ciudad + Municipio
+              if (_nivelJefe == 'municipal') ...[
+                DropdownButtonFormField<int>(
+                  value: _jefeCiudadId,
+                  items: jefeCiudades.map<DropdownMenuItem<int>>((c) => 
+                    DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() {
+                    _jefeCiudadId = v;
+                    _jefeMunicipioId = null;
+                  }),
+                  decoration: const InputDecoration(labelText: 'Ciudad/Departamento'),
+                ),
+                DropdownButtonFormField<int>(
+                  value: _jefeMunicipioId,
+                  items: jefeMunicipios.map<DropdownMenuItem<int>>((m) => 
+                    DropdownMenuItem(value: m['id'] as int, child: Text(m['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() => _jefeMunicipioId = v),
+                  decoration: const InputDecoration(labelText: 'Municipio'),
+                ),
+              ],
+              
+              // Comuna: Ciudad + Municipio + Comuna
+              if (_nivelJefe == 'comuna') ...[
+                DropdownButtonFormField<int>(
+                  value: _jefeCiudadId,
+                  items: jefeCiudades.map<DropdownMenuItem<int>>((c) => 
+                    DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() {
+                    _jefeCiudadId = v;
+                    _jefeMunicipioId = null;
+                    _jefeComunaId = null;
+                  }),
+                  decoration: const InputDecoration(labelText: 'Ciudad/Departamento'),
+                ),
+                DropdownButtonFormField<int>(
+                  value: _jefeMunicipioId,
+                  items: jefeMunicipios.map<DropdownMenuItem<int>>((m) => 
+                    DropdownMenuItem(value: m['id'] as int, child: Text(m['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() {
+                    _jefeMunicipioId = v;
+                    _jefeComunaId = null;
+                  }),
+                  decoration: const InputDecoration(labelText: 'Municipio'),
+                ),
+                DropdownButtonFormField<int>(
+                  value: _jefeComunaId,
+                  items: jefeComunas.map<DropdownMenuItem<int>>((c) => 
+                    DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() => _jefeComunaId = v),
+                  decoration: const InputDecoration(labelText: 'Comuna'),
+                ),
+              ],
+              
+              // Puesto de Votación: Ciudad + Municipio + Comuna + Puesto
+              if (_nivelJefe == 'puesto_votacion') ...[
+                DropdownButtonFormField<int>(
+                  value: _jefeCiudadId,
+                  items: jefeCiudades.map<DropdownMenuItem<int>>((c) => 
+                    DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() {
+                    _jefeCiudadId = v;
+                    _jefeMunicipioId = null;
+                    _jefeComunaId = null;
+                    _jefePuestoVotacionId = null;
+                  }),
+                  decoration: const InputDecoration(labelText: 'Ciudad/Departamento'),
+                ),
+                DropdownButtonFormField<int>(
+                  value: _jefeMunicipioId,
+                  items: jefeMunicipios.map<DropdownMenuItem<int>>((m) => 
+                    DropdownMenuItem(value: m['id'] as int, child: Text(m['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() {
+                    _jefeMunicipioId = v;
+                    _jefeComunaId = null;
+                    _jefePuestoVotacionId = null;
+                  }),
+                  decoration: const InputDecoration(labelText: 'Municipio'),
+                ),
+                DropdownButtonFormField<int>(
+                  value: _jefeComunaId,
+                  items: jefeComunas.map<DropdownMenuItem<int>>((c) => 
+                    DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() {
+                    _jefeComunaId = v;
+                    _jefePuestoVotacionId = null;
+                  }),
+                  decoration: const InputDecoration(labelText: 'Comuna'),
+                ),
+                DropdownButtonFormField<int>(
+                  value: _jefePuestoVotacionId,
+                  items: jefePuestos.map<DropdownMenuItem<int>>((p) => 
+                    DropdownMenuItem(value: p['id'] as int, child: Text(p['nombre'] as String))
+                  ).toList(),
+                  onChanged: (v) => setState(() => _jefePuestoVotacionId = v),
+                  decoration: const InputDecoration(labelText: 'Puesto de Votación'),
+                ),
+              ],
+              const Divider(),
+            ],
             // Credenciales opcionales
             TextField(controller: _usernameCtrl, decoration: const InputDecoration(labelText: 'Usuario (opcional)')),
             TextField(controller: _passwordCtrl, decoration: const InputDecoration(labelText: 'Contraseña (opcional)'), obscureText: true),
