@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'jera_vota.dart';
 import 'votantes.dart';
+import 'jerarquia_localidad.dart';
 import 'offline_app.dart';
 import 'package:http/http.dart' as http;
 
@@ -139,11 +140,20 @@ class ApiClient {
   Future<void> eventoCreate(String candId, Map<String, dynamic> payload) async {
     await postJson('/api/candidaturas/' + candId + '/eventos/', payload);
   }
+
+  // Jerarquía por localidad
+  Future<Map<String, dynamic>> jerarquiaLocalidad(String candidaturaId) async {
+    return await getJson('/api/candidaturas/$candidaturaId/jerarquia-localidad/');
+  }
+
+  Future<Map<String, dynamic>> buscarLideresLocalidad(String candidaturaId, String busqueda) async {
+    return await getJson('/api/candidaturas/$candidaturaId/buscar-lideres/?busqueda=${Uri.encodeComponent(busqueda)}');
+  }
 }
 
 final apiProvider = Provider<ApiClient>((ref) {
   // API local para desarrollo
-  const baseUrl = 'http://127.0.0.1:8000';
+  const baseUrl = 'https://mivoto.corpofuturo.org';
   return ApiClient(baseUrl);
 });
 
@@ -270,6 +280,7 @@ class CandidaturaHome extends StatelessWidget {
         crossAxisSpacing: 12,
         children: [
           _quickCard(context, Icons.account_tree, 'Jerarquía', () => JerarquiaScreen(candId: candId, candName: '')),
+          _quickCard(context, Icons.location_city, 'Jerarquía Localidad', () => JerarquiaLocalidadScreen(candidaturaId: candId, candidaturaName: 'Candidatura')),
           _quickCard(context, Icons.people, 'Votantes', () => VotantesScreen(candId: candId, candName: '')),
           _quickCard(context, Icons.event, 'Agendas', () => AgendasScreen(candId: candId)),
           _quickCard(context, Icons.calendar_today, 'Eventos', () => EventosScreen(candId: candId)),
@@ -332,9 +343,70 @@ class AgendasScreen extends ConsumerWidget {
                       itemCount: agendas.length,
                       itemBuilder: (_, i) {
                         final a = agendas[i] as Map<String, dynamic>;
-                        return ListTile(
-                          title: Text(a['nombre']?.toString() ?? ''),
-                          subtitle: Text('Asistentes: ${a['asistentes']}'),
+                        final status = a['status']?.toString() ?? 'not_started';
+                        
+                        // Colores según estado
+                        Color statusColor;
+                        String statusText;
+                        IconData statusIcon;
+                        
+                        switch (status) {
+                          case 'in_progress':
+                            statusColor = Colors.green;
+                            statusText = 'En progreso';
+                            statusIcon = Icons.play_circle;
+                            break;
+                          case 'finished':
+                            statusColor = Colors.red;
+                            statusText = 'Finalizada';
+                            statusIcon = Icons.check_circle;
+                            break;
+                          default:
+                            statusColor = Colors.orange;
+                            statusText = 'No ha iniciado';
+                            statusIcon = Icons.schedule;
+                        }
+                        
+                        return Card(
+                          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: ListTile(
+                            leading: Icon(statusIcon, color: statusColor, size: 32),
+                            title: Text(
+                              a['nombre']?.toString() ?? '',
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('📅 ${a['fecha'] ?? 'Sin fecha'} ${a['hora_inicio'] ?? ''} - ${a['hora_final'] ?? ''}'),
+                                Text('👥 Asistentes: ${a['asistentes_count'] ?? 0}/${a['cantidad_personas'] ?? 0}'),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: statusColor.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(color: statusColor),
+                                  ),
+                                  child: Text(
+                                    statusText,
+                                    style: TextStyle(
+                                      color: statusColor,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            trailing: const Icon(Icons.arrow_forward_ios),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => AgendaDetailScreen(agenda: a),
+                                ),
+                              );
+                            },
+                          ),
                         );
                       },
                     );
@@ -528,4 +600,209 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
 }
 
 String _fmtTime(TimeOfDay t) => '${t.hour.toString().padLeft(2,'0')}:${t.minute.toString().padLeft(2,'0')}';
+
+class AgendaDetailScreen extends StatelessWidget {
+  const AgendaDetailScreen({super.key, required this.agenda});
+  final Map<String, dynamic> agenda;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = agenda['status']?.toString() ?? 'not_started';
+    
+    // Colores según estado
+    Color statusColor;
+    String statusText;
+    IconData statusIcon;
+    
+    switch (status) {
+      case 'in_progress':
+        statusColor = Colors.green;
+        statusText = 'En progreso';
+        statusIcon = Icons.play_circle;
+        break;
+      case 'finished':
+        statusColor = Colors.red;
+        statusText = 'Finalizada';
+        statusIcon = Icons.check_circle;
+        break;
+      default:
+        statusColor = Colors.orange;
+        statusText = 'No ha iniciado';
+        statusIcon = Icons.schedule;
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(agenda['nombre']?.toString() ?? 'Detalle de Agenda'),
+        backgroundColor: statusColor.withOpacity(0.1),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Estado de la reunión
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: statusColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: statusColor),
+              ),
+              child: Row(
+                children: [
+                  Icon(statusIcon, color: statusColor, size: 32),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          statusText,
+                          style: TextStyle(
+                            color: statusColor,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          agenda['nombre']?.toString() ?? '',
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // Información básica
+            _buildInfoCard('📅 Fecha y Hora', [
+              _buildInfoRow('Fecha', agenda['fecha'] ?? 'No definida'),
+              _buildInfoRow('Hora inicio', agenda['hora_inicio'] ?? 'No definida'),
+              _buildInfoRow('Hora fin', agenda['hora_final'] ?? 'No definida'),
+            ]),
+            
+            const SizedBox(height: 16),
+            
+            // Ubicación
+            _buildInfoCard('📍 Ubicación', [
+              _buildInfoRow('Dirección', agenda['direccion'] ?? 'No definida'),
+              _buildInfoRow('Teléfono', agenda['telefono'] ?? 'No definido'),
+              if (agenda['ciudad_nombre'] != null) _buildInfoRow('Ciudad', agenda['ciudad_nombre']),
+              if (agenda['municipio_nombre'] != null) _buildInfoRow('Municipio', agenda['municipio_nombre']),
+              if (agenda['comuna_nombre'] != null) _buildInfoRow('Comuna', agenda['comuna_nombre']),
+            ]),
+            
+            const SizedBox(height: 16),
+            
+            // Responsables
+            _buildInfoCard('👥 Responsables', [
+              _buildInfoRow('Encargado', agenda['encargado_nombre'] ?? 'No asignado'),
+              _buildInfoRow('Delegado', agenda['delegado_nombre'] ?? 'No asignado'),
+              _buildInfoRow('Verificador', agenda['verificador_nombre'] ?? 'No asignado'),
+            ]),
+            
+            const SizedBox(height: 16),
+            
+            // Capacidad y asistentes
+            _buildInfoCard('🎯 Capacidad', [
+              _buildInfoRow('Asistentes confirmados', '${agenda['asistentes_count'] ?? 0}'),
+              _buildInfoRow('Capacidad total', '${agenda['cantidad_personas'] ?? 0}'),
+              _buildInfoRow('Disponibilidad', _getAvailabilityText()),
+              _buildInfoRow('Tipo', agenda['privado'] == true ? 'Privada' : 'Pública'),
+            ]),
+            
+            const SizedBox(height: 16),
+            
+            // Requerimientos
+            if ((agenda['requerimientos_publicidad']?.toString() ?? '').isNotEmpty ||
+                (agenda['requerimientos_logistica']?.toString() ?? '').isNotEmpty)
+              _buildInfoCard('📋 Requerimientos', [
+                if ((agenda['requerimientos_publicidad']?.toString() ?? '').isNotEmpty)
+                  _buildInfoRow('Publicidad', agenda['requerimientos_publicidad']),
+                if ((agenda['requerimientos_logistica']?.toString() ?? '').isNotEmpty)
+                  _buildInfoRow('Logística', agenda['requerimientos_logistica']),
+              ]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoCard(String title, List<Widget> children) {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String? value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(
+              '$label:',
+              style: const TextStyle(
+                fontWeight: FontWeight.w500,
+                color: Colors.grey,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value ?? 'No definido',
+              style: TextStyle(
+                color: (value == null || value.isEmpty) ? Colors.grey : Colors.black,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getAvailabilityText() {
+    final asistentes = agenda['asistentes_count'] ?? 0;
+    final capacidad = agenda['cantidad_personas'] ?? 0;
+    
+    if (capacidad == 0) return 'Sin límite definido';
+    
+    final porcentaje = (asistentes / capacidad * 100).round();
+    
+    if (porcentaje > 100) {
+      return '⚠️ Sobrecupo ($porcentaje%)';
+    } else if (porcentaje >= 90) {
+      return '🔴 Casi lleno ($porcentaje%)';
+    } else if (porcentaje >= 70) {
+      return '🟡 Ocupado ($porcentaje%)';
+    } else {
+      return '🟢 Disponible ($porcentaje%)';
+    }
+  }
+}
 
