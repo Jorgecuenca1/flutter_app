@@ -1,22 +1,36 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'jera_vota.dart';
 import 'votantes.dart';
 import 'jerarquia_localidad.dart';
 import 'offline_app.dart';
+import 'profile_screen.dart';
+import 'services/local_storage_service.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
+  // Configurar SSL para permitir certificados autofirmados o con problemas
+  HttpOverrides.global = MyHttpOverrides();
   runApp(const ProviderScope(child: MiVotoApp()));
 }
 
+class MyHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+  }
+}
+
 class ApiClient {
-  ApiClient(this.baseUrl);
+  ApiClient(this.baseUrl, [this._storage]);
   final String baseUrl;
   final _client = http.Client();
   String? _cookie;
   String? _authToken;
+  final LocalStorageService? _storage;
 
   Map<String, String> _headers({bool jsonBody = true}) {
     final h = <String, String>{};
@@ -49,6 +63,23 @@ class ApiClient {
         _cookie = null;
         // Añadiremos el token como header Authorization en siguientes requests
         _authToken = token;
+        
+        // Guardar sesión persistente
+        if (_storage != null) {
+          await _storage!.saveAuthToken(token);
+          await _storage!.setLoggedIn(true);
+          
+          // Obtener y guardar información del usuario
+          try {
+            final userData = await me();
+            final userId = userData['id']?.toString() ?? userData['votante']?['id']?.toString();
+            if (userId != null) {
+              await _storage!.saveCurrentUserId(userId);
+            }
+          } catch (e) {
+            // Si falla obtener el usuario, no es crítico
+          }
+        }
       }
       return true;
     }
@@ -56,6 +87,7 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> getJson(String path) async {
+    try {
     final r = await _client.get(Uri.parse('$baseUrl$path'), headers: _headers(jsonBody: false));
     if (r.statusCode >= 400) {
       throw Exception('GET ' + path + ' failed: ' + r.statusCode.toString() + ' ' + r.body);
@@ -64,9 +96,19 @@ class ApiClient {
       throw Exception('Received HTML instead of JSON. Check authentication.');
     }
     return jsonDecode(r.body) as Map<String, dynamic>;
+    } catch (e) {
+      if (e.toString().contains('Failed host lookup') || 
+          e.toString().contains('SocketException') ||
+          e.toString().contains('HandshakeException') ||
+          e.toString().contains('No address associated with hostname')) {
+        throw Exception('Sin conexión a internet. Verifica tu conectividad.');
+      }
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> postJson(String path, Map<String, dynamic> body) async {
+    try {
     final r = await _client.post(
       Uri.parse('$baseUrl$path'),
       headers: _headers(),
@@ -75,20 +117,73 @@ class ApiClient {
     if (r.statusCode >= 400) {
       throw Exception('POST ' + path + ' failed: ' + r.statusCode.toString() + ' ' + r.body);
     }
+    if (r.body.startsWith('<!DOCTYPE') || r.body.startsWith('<html')) {
+      throw Exception('Received HTML instead of JSON. Check authentication.');
+    }
     return jsonDecode(r.body) as Map<String, dynamic>;
+    } catch (e) {
+      if (e.toString().contains('Failed host lookup') || 
+          e.toString().contains('SocketException') ||
+          e.toString().contains('HandshakeException') ||
+          e.toString().contains('No address associated with hostname')) {
+        throw Exception('Sin conexión a internet. Verifica tu conectividad.');
+      }
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> me() async {
-    return getJson('/api/me/');
+    try {
+      final data = await getJson('/api/me/');
+      // Guardar en cache
+      if (_storage != null) {
+        await _storage!.cacheUserData(data);
+      }
+      return data;
+    } catch (e) {
+      // Si falla, intentar cargar desde cache
+      if (_storage != null) {
+        final cached = await _storage!.getCachedUserData();
+        if (cached != null) {
+          return cached;
+        }
+      }
+      rethrow;
+    }
   }
 
   Future<List<dynamic>> candidaturas() async {
+    try {
     final data = await getJson('/api/candidaturas/');
-    return data['candidaturas'] as List<dynamic>;
+      final candidaturas = data['candidaturas'] as List<dynamic>;
+      // Guardar en cache
+      if (_storage != null) {
+        await _storage!.cacheCandidaturas(candidaturas);
+      }
+      return candidaturas;
+    } catch (e) {
+      // Si falla, intentar cargar desde cache
+      if (_storage != null) {
+        final cached = await _storage!.getCachedCandidaturas();
+        if (cached.isNotEmpty) {
+          return cached;
+        }
+      }
+      rethrow;
+    }
   }
 
   // Extensiones API para replicar Django
-  Future<Map<String, dynamic>> lookups() async => await getJson('/api/lookups/');
+  Future<Map<String, dynamic>> lookups() async {
+    final data = await getJson('/api/lookups/');
+    
+    // Guardar datos offline para uso posterior
+    if (_storage != null) {
+      await _storage!.saveLookupsData(data);
+    }
+    
+    return data;
+  }
 
   Future<List<dynamic>> jerarquiaNodes(String candId) async {
     final data = await getJson('/api/candidaturas/' + candId + '/jerarquia/nodos/');
@@ -100,8 +195,31 @@ class ApiClient {
     return (data['votantes'] as List?) ?? <dynamic>[];
   }
 
-  Future<void> votanteCreate(String candId, Map<String, dynamic> payload) async {
-    await postJson('/api/candidaturas/' + candId + '/votantes/', payload);
+  // Método alternativo para jefes que solo pueden ver su jerarquía
+  Future<List<dynamic>> votantesListHierarchy(String candId) async {
+    try {
+      // Intentar endpoint específico para jerarquía si existe
+      final data = await getJson('/api/candidaturas/' + candId + '/votantes/jerarquia/');
+      return (data['votantes'] as List?) ?? <dynamic>[];
+    } catch (e) {
+      // Si no existe el endpoint, usar el método normal
+      return await votantesList(candId);
+    }
+  }
+
+  Future<Map<String, dynamic>> votanteCreate(String candId, Map<String, dynamic> payload) async {
+    print('📤 Enviando votante al servidor: ${payload['nombres']} ${payload['apellidos']}');
+    print('📤 URL: $baseUrl/api/candidaturas/$candId/votantes/');
+    print('📤 Auth token presente: ${_authToken != null}');
+    
+    try {
+      final response = await postJson('/api/candidaturas/' + candId + '/votantes/', payload);
+      print('📥 Respuesta del servidor: $response');
+      return response['votante'] as Map<String, dynamic>;
+    } catch (e) {
+      print('❌ Error en votanteCreate: $e');
+      rethrow;
+    }
   }
 
   Future<void> asignarRol(String candId, {required String votanteId, required String rol, required bool esJefe}) async {
@@ -149,12 +267,37 @@ class ApiClient {
   Future<Map<String, dynamic>> buscarLideresLocalidad(String candidaturaId, String busqueda) async {
     return await getJson('/api/candidaturas/$candidaturaId/buscar-lideres/?busqueda=${Uri.encodeComponent(busqueda)}');
   }
+
+  // Cargar sesión guardada
+  Future<bool> loadSavedSession() async {
+    if (_storage == null) return false;
+    
+    final isLoggedIn = await _storage!.isLoggedIn();
+    if (!isLoggedIn) return false;
+    
+    final token = await _storage!.getAuthToken();
+    if (token != null) {
+      _authToken = token;
+      return true;
+    }
+    return false;
+  }
+
+  // Cerrar sesión
+  Future<void> logout() async {
+    _authToken = null;
+    _cookie = null;
+    if (_storage != null) {
+      await _storage!.clearSession();
+    }
+  }
 }
 
 final apiProvider = Provider<ApiClient>((ref) {
   // API local para desarrollo
-  const baseUrl = 'https://mivoto.corpofuturo.org';
-  return ApiClient(baseUrl);
+  const baseUrl = 'http://127.0.0.1:8001';
+  final storage = ref.read(storageProvider);
+  return ApiClient(baseUrl, storage);
 });
 
 class MiVotoApp extends StatelessWidget {
@@ -181,6 +324,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _passCtrl = TextEditingController();
   bool _loading = false;
   String? _error;
+  bool _checkingSession = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSavedSession();
+  }
+
+  Future<void> _checkSavedSession() async {
+    final api = ref.read(apiProvider);
+    final hasSession = await api.loadSavedSession();
+    
+    if (hasSession && mounted) {
+      // Si hay sesión guardada, ir directamente al dashboard
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+      );
+    } else {
+      setState(() => _checkingSession = false);
+    }
+  }
 
   Future<void> _doLogin() async {
     setState(() => _loading = true);
@@ -204,6 +368,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_checkingSession) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Verificando sesión...'),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('MiVoto - Ingresar')),
       body: Padding(
@@ -231,7 +410,29 @@ class DashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final api = ref.watch(apiProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Candidaturas')),
+      appBar: AppBar(
+        title: const Text('Candidaturas'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              );
+            },
+            tooltip: 'Mi perfil',
+          ),
+          IconButton(
+            icon: const Icon(Icons.offline_pin),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const PendingListScreen()),
+              );
+            },
+            tooltip: 'Ver datos offline',
+          ),
+        ],
+      ),
       body: FutureBuilder(
         future: api.candidaturas(),
         builder: (context, snap) {
@@ -279,7 +480,7 @@ class CandidaturaHome extends StatelessWidget {
         mainAxisSpacing: 12,
         crossAxisSpacing: 12,
         children: [
-          _quickCard(context, Icons.account_tree, 'Jerarquía', () => JerarquiaScreen(candId: candId, candName: '')),
+          _quickCard(context, Icons.account_tree, 'Mi Jerarquía', () => JerarquiaScreen(candId: candId, candName: '')),
           _quickCard(context, Icons.location_city, 'Jerarquía Localidad', () => JerarquiaLocalidadScreen(candidaturaId: candId, candidaturaName: 'Candidatura')),
           _quickCard(context, Icons.people, 'Votantes', () => VotantesScreen(candId: candId, candName: '')),
           _quickCard(context, Icons.event, 'Agendas', () => AgendasScreen(candId: candId)),
@@ -322,9 +523,45 @@ class AgendasScreen extends ConsumerWidget {
         Map<String, dynamic>? me = !meSnap.hasError && meSnap.hasData ? meSnap.data : null;
         final vot = (me != null ? me['votante'] as Map<String, dynamic>? : null);
         final role = ((vot?['pertenencia']) ?? '').toString().toLowerCase();
+        // Solo candidatos o agendadores pueden crear agendas
         final bool canCreate = (vot?['es_candidato'] == true) || role == 'agendador';
         return Scaffold(
-          appBar: AppBar(title: const Text('Agendas')),
+          appBar: AppBar(
+            title: const Text('Agendas'),
+            actions: [
+              if (me != null)
+                IconButton(
+                  icon: const Icon(Icons.info_outline),
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Permisos para Agendas'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Rol: ${role.isEmpty ? 'Sin rol' : role}'),
+                            const SizedBox(height: 8),
+                            if (canCreate)
+                              const Text('✅ Puede crear agendas')
+                            else
+                              const Text('❌ No puede crear agendas\n(Solo candidatos y agendadores)'),
+                          ],
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('Cerrar'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                  tooltip: 'Ver permisos',
+                ),
+            ],
+          ),
           body: waitingMe
               ? const Center(child: CircularProgressIndicator())
               : FutureBuilder(
@@ -497,9 +734,26 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
   void initState() { super.initState(); _loadLookups(); }
 
   Future<void> _loadLookups() async {
+    try {
+      // Intentar cargar desde API
     final api = ref.read(apiProvider);
     final data = await api.lookups();
     setState(() => _lookups = data);
+    } catch (e) {
+      // Si falla, cargar datos offline
+      final storage = ref.read(storageProvider);
+      final offlineData = await storage.getLookupsData();
+      if (offlineData != null) {
+        setState(() => _lookups = offlineData);
+      } else {
+        // Si no hay datos offline, mostrar error
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No hay datos de localidad disponibles offline'))
+          );
+        }
+      }
+    }
   }
 
   Future<void> _save() async {

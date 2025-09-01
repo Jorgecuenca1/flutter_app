@@ -41,7 +41,7 @@ class _PendingListScreenState extends ConsumerState<PendingListScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     final store = ref.read(storageProvider);
-    _pendV = await store.getPendingVotantes();
+    _pendV = await store.getPendingVotantesWithDetails();
     _pendA = await store.getPendingAgendas();
     setState(() => _loading = false);
   }
@@ -79,7 +79,17 @@ class _PendingListScreenState extends ConsumerState<PendingListScreen> {
                         child: ListTile(
                           leading: const Icon(Icons.person),
                           title: Text('${e.value['nombres'] ?? ''} ${e.value['apellidos'] ?? ''}'),
-                          subtitle: Text('ID: ${e.value['identificacion'] ?? ''}'),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('ID: ${e.value['identificacion'] ?? ''}'),
+                              if (e.value['ciudad_nombre'] != null) 
+                                Text('📍 ${e.value['ciudad_nombre']}${e.value['municipio_nombre'] != null ? ', ${e.value['municipio_nombre']}' : ''}${e.value['comuna_nombre'] != null ? ', ${e.value['comuna_nombre']}' : ''}'),
+                              if (e.value['pertenencia'] != null)
+                                Text('👤 Rol: ${e.value['pertenencia']}'),
+                            ],
+                          ),
+                          isThreeLine: true,
                         ),
                       )),
                   const Divider(),

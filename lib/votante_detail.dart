@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'main.dart';
+import 'services/local_storage_service.dart';
+import 'offline_app.dart';
 
 class VotanteDetailScreen extends ConsumerStatefulWidget {
   const VotanteDetailScreen({super.key, required this.candId, required this.candName, required this.votanteId});
@@ -66,16 +68,42 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       final api = ref.read(apiProvider);
-      final futures = await Future.wait([
-        api.votanteDetail(widget.candId, widget.votanteId),
-        api.lookups(),
-      ]);
-      _votante = futures[0] as Map<String, dynamic>;
-      _lookups = futures[1] as Map<String, dynamic>;
+      final storage = ref.read(storageProvider);
+      
+      // Intentar cargar desde API
+      try {
+        final futures = await Future.wait([
+          api.votanteDetail(widget.candId, widget.votanteId),
+          api.lookups(),
+        ]);
+        _votante = futures[0] as Map<String, dynamic>;
+        _lookups = futures[1] as Map<String, dynamic>;
+      } catch (e) {
+        print('Error loading from API, trying offline data: $e');
+        
+        // Si falla la API, intentar cargar desde cache local
+        _lookups = await storage.getLookupsData();
+        
+        // Para el votante, buscar en la jerarquía local
+        final userData = await storage.getCachedUserData();
+        final currentUserId = userData?['id']?.toString() ?? userData?['votante']?['id']?.toString();
+        final candId = userData?['votante']?['candidatura']?.toString();
+        
+        if (currentUserId != null && candId != null) {
+          final hierarchy = await storage.getVotantesHierarchy(candId, currentUserId);
+          _votante = hierarchy.firstWhere(
+            (v) => v['id']?.toString() == widget.votanteId,
+            orElse: () => throw Exception('Votante no encontrado en datos locales')
+          );
+        } else {
+          throw Exception('No se pueden cargar datos offline sin información de usuario');
+        }
+      }
+      
       _populateControllers();
     } catch (e) {
       print('Error loading votante detail: $e');
-      _error = '$e';
+      _error = 'Error al cargar detalles del votante: $e';
     } finally {
       setState(() { _loading = false; });
     }
@@ -111,6 +139,51 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
       _jefePuestoVotacionId = _votante!['jefe_puesto_votacion_id'] is int ? _votante!['jefe_puesto_votacion_id'] : null;
     } catch (e) {
       print('Error populating controllers: $e');
+    }
+  }
+
+  Future<Map<String, dynamic>?> _getLeaderInfo() async {
+    if (_votante == null) return null;
+    
+    final lideres = _votante!['lideres'] as List<dynamic>?;
+    if (lideres == null || lideres.isEmpty) return null;
+    
+    final leaderId = lideres.first.toString();
+    
+    try {
+      final api = ref.read(apiProvider);
+      final storage = ref.read(storageProvider);
+      
+      // Intentar obtener la información del líder desde la API
+      try {
+        final allVotantes = await api.votantesList(widget.candId);
+        final leader = allVotantes.cast<Map<String, dynamic>>().firstWhere(
+          (votante) => votante['id']?.toString() == leaderId,
+          orElse: () => <String, dynamic>{},
+        );
+        if (leader.isNotEmpty) return leader;
+      } catch (e) {
+        print('Error loading leader from API: $e');
+      }
+      
+      // Si falla la API, buscar en cache local
+      // Necesitamos el ID del usuario actual para obtener la jerarquía
+      final userData = await storage.getUserData();
+      final currentUserId = userData?['id']?.toString() ?? userData?['votante']?['id']?.toString();
+      
+      if (currentUserId != null) {
+        final hierarchyData = await storage.getVotantesHierarchy(widget.candId, currentUserId);
+        final leader = hierarchyData.firstWhere(
+          (votante) => votante['id']?.toString() == leaderId,
+          orElse: () => <String, dynamic>{},
+        );
+        if (leader.isNotEmpty) return leader;
+      }
+      
+      return null;
+    } catch (e) {
+      print('Error getting leader info: $e');
+      return null;
     }
   }
 
@@ -226,6 +299,81 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
                 ),
               ),
             ),
+            const SizedBox(height: 16),
+            
+            // Información del líder
+            if (_votante != null && _votante!['lideres'] != null && (_votante!['lideres'] as List).isNotEmpty)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Información del Líder', style: Theme.of(context).textTheme.titleLarge),
+                      const SizedBox(height: 12),
+                      FutureBuilder<Map<String, dynamic>?>(
+                        future: _getLeaderInfo(),
+                        builder: (context, snapshot) {
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return const CircularProgressIndicator();
+                          }
+                          
+                          final leader = snapshot.data;
+                          if (leader == null) {
+                            return const Text('No se pudo cargar la información del líder');
+                          }
+                          
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.person, color: Colors.blue),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      '${leader['nombres'] ?? ''} ${leader['apellidos'] ?? ''}',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  const Icon(Icons.badge, color: Colors.orange),
+                                  const SizedBox(width: 8),
+                                  Text('ID: ${leader['identificacion'] ?? 'N/A'}'),
+                                ],
+                              ),
+                              if (leader['numero_celular'] != null && leader['numero_celular'].toString().isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.phone, color: Colors.green),
+                                    const SizedBox(width: 8),
+                                    Text('Celular: ${leader['numero_celular']}'),
+                                  ],
+                                ),
+                              ],
+                              if (leader['pertenencia'] != null && leader['pertenencia'].toString().isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.work, color: Colors.purple),
+                                    const SizedBox(width: 8),
+                                    Text('Rol: ${leader['pertenencia']}'),
+                                  ],
+                                ),
+                              ],
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             const SizedBox(height: 16),
             
             // Ubicación

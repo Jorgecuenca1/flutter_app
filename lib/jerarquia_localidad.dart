@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'main.dart';
+import 'services/local_storage_service.dart';
+import 'offline_app.dart';
 
 class JerarquiaLocalidadScreen extends HookConsumerWidget {
   final String candidaturaId;
@@ -22,13 +24,56 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
     final isLoading = useState(true);
     final isSearching = useState(false);
     final busquedaActual = useState('');
+    final userData = useState<Map<String, dynamic>?>(null);
+    final filtroLocalidad = useState<String>('todos'); // todos, ciudad, municipio, comuna, puesto
 
     // Cargar datos iniciales
     useEffect(() {
       _loadJerarquia() async {
         try {
-          final data = await api.jerarquiaLocalidad(candidaturaId);
-          jerarquiaData.value = data;
+          final storage = ref.read(storageProvider);
+          
+          // Obtener datos del usuario actual
+          Map<String, dynamic>? userDataLocal = await storage.getCachedUserData();
+          if (userDataLocal == null) {
+            userDataLocal = await api.me();
+            await storage.cacheUserData(userDataLocal);
+          }
+          userData.value = userDataLocal;
+          
+          final currentUserId = userDataLocal['id']?.toString() ?? 
+                               userDataLocal['votante']?['id']?.toString();
+          
+          if (currentUserId == null) {
+            throw Exception('No se pudo obtener el ID del usuario actual');
+          }
+
+          // Intentar cargar desde la API primero
+          List<Map<String, dynamic>> hierarchyData = [];
+          try {
+            final allVotantes = await api.votantesList(candidaturaId);
+            
+            // Guardar en cache y calcular jerarquía
+            await storage.cacheVotantesWithHierarchy(candidaturaId, allVotantes, currentUserId);
+            hierarchyData = await storage.getVotantesHierarchy(candidaturaId, currentUserId);
+          } catch (e) {
+            // Si falla la API, usar datos locales
+            print('⚠️ Error cargando desde API, usando datos locales: $e');
+            hierarchyData = await storage.getVotantesHierarchy(candidaturaId, currentUserId);
+          }
+
+          // Convertir jerarquía a formato de localidad
+          print('🔍 JERARQUIA LOCALIDAD - Datos de jerarquía recibidos: ${hierarchyData.length} votantes');
+          for (final votante in hierarchyData) {
+            print('  - ${votante['nombres']} ${votante['apellidos']} (Nivel: ${votante['hierarchy_level']})');
+            print('    🏙️ Ciudad: ${votante['ciudad_nombre']} | Municipio: ${votante['municipio_nombre']} | Comuna: ${votante['comuna_nombre']}');
+            print('    🔑 Campos disponibles: ${votante.keys.toList()}');
+          }
+          
+          final localidadData = _convertToLocalidadFormat(hierarchyData, filtroLocalidad.value);
+          print('🔍 JERARQUIA LOCALIDAD - Datos convertidos: ${localidadData['total_votantes_jerarquia']} votantes');
+          jerarquiaData.value = localidadData;
+          
         } catch (e) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Error al cargar jerarquía: $e')),
@@ -40,6 +85,19 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
       _loadJerarquia();
       return null;
     }, []);
+
+    // Escuchar cambios en el filtro de localidad
+    useEffect(() {
+      if (jerarquiaData.value != null) {
+        // Recalcular datos cuando cambie el filtro
+        final storage = ref.read(storageProvider);
+        storage.getVotantesHierarchy(candidaturaId, userData.value?['id']?.toString() ?? userData.value?['votante']?['id']?.toString() ?? '').then((hierarchyData) {
+          final localidadData = _convertToLocalidadFormat(hierarchyData, filtroLocalidad.value);
+          jerarquiaData.value = localidadData;
+        });
+      }
+      return null;
+    }, [filtroLocalidad.value]);
 
     // Función de búsqueda
     Future<void> _buscarLideres(String busqueda) async {
@@ -87,7 +145,7 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
     }
     print('========================');
 
-    // Ordenar localidades por tipo y nombre
+    // Ordenar localidades por tipo y nombre (el filtro ya se aplicó en _convertToLocalidadFormat)
     final localidadesOrdenadas = localidades.entries.toList()
       ..sort((a, b) {
         final tipoA = a.value['tipo'] ?? '';
@@ -118,8 +176,33 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
         onRefresh: () async {
           isLoading.value = true;
           try {
-            final data = await api.jerarquiaLocalidad(candidaturaId);
-            jerarquiaData.value = data;
+            final storage = ref.read(storageProvider);
+            
+            // Obtener datos del usuario actual
+            Map<String, dynamic>? userData = await storage.getCachedUserData();
+            if (userData == null) {
+              userData = await api.me();
+              await storage.cacheUserData(userData);
+            }
+            
+            final currentUserId = userData['id']?.toString() ?? 
+                                 userData['votante']?['id']?.toString();
+            
+            if (currentUserId == null) {
+              throw Exception('No se pudo obtener el ID del usuario actual');
+            }
+
+            // Recargar desde la API
+            final allVotantes = await api.votantesList(candidaturaId);
+            
+            // Guardar en cache y calcular jerarquía
+            await storage.cacheVotantesWithHierarchy(candidaturaId, allVotantes, currentUserId);
+            final hierarchyData = await storage.getVotantesHierarchy(candidaturaId, currentUserId);
+
+            // Convertir jerarquía a formato de localidad
+            print('🔄 REFRESH JERARQUIA LOCALIDAD - Datos de jerarquía: ${hierarchyData.length} votantes');
+            final localidadData = _convertToLocalidadFormat(hierarchyData, filtroLocalidad.value);
+            jerarquiaData.value = localidadData;
           } finally {
             isLoading.value = false;
           }
@@ -137,18 +220,30 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Row(
+                        children: [
+                          Icon(Icons.person, color: Colors.blue.shade700),
+                          const SizedBox(width: 8),
                       Text(
                         'Usuario Actual',
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
-                            ),
+                                  color: Colors.blue.shade700,
+                                ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 8),
-                      Text('👤 ${usuarioActual['nombres']} ${usuarioActual['apellidos']} (${usuarioActual['identificacion']})'),
-                      Text('Nivel: ${_getNivelJefeLabel(usuarioActual['nivel_jefe'])}'),
-                      if (usuarioActual['jefe_ciudad_nombre'] != null)
-                        Text('Jurisdicción: ${usuarioActual['jefe_ciudad_nombre']}'),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
+                      if (userData.value != null) ...[
+                        Text('👤 ${userData.value!['votante']?['nombres'] ?? ''} ${userData.value!['votante']?['apellidos'] ?? ''} (${userData.value!['votante']?['identificacion'] ?? ''})'),
+                        Text('📧 ${userData.value!['user'] ?? ''}'),
+                        Text('🏷️ Rol: ${userData.value!['votante']?['pertenencia'] ?? 'Sin rol'}'),
+                        if (userData.value!['votante']?['es_jefe'] == true)
+                          Text('👑 Es Jefe', style: TextStyle(color: Colors.orange.shade700, fontWeight: FontWeight.bold)),
+                        if (userData.value!['votante']?['es_candidato'] == true)
+                          Text('🎯 Es Candidato', style: TextStyle(color: Colors.green.shade700, fontWeight: FontWeight.bold)),
+                      ],
+                      const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(
@@ -163,6 +258,45 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
                               style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
                             ),
                           ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Filtros de localidad
+              Card(
+                color: Colors.green.shade50,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.filter_list, color: Colors.green.shade700),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Filtrar por Tipo de Localidad',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.green.shade700,
+                                ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _buildFiltroChip('todos', '🌍 Todos', filtroLocalidad),
+                          _buildFiltroChip('ciudad', '🏙️ Ciudades', filtroLocalidad),
+                          _buildFiltroChip('municipio', '🏘️ Municipios', filtroLocalidad),
+                          _buildFiltroChip('comuna', '🏠 Comunas', filtroLocalidad),
+                          _buildFiltroChip('puesto', '🗳️ Puestos', filtroLocalidad),
                         ],
                       ),
                     ],
@@ -601,5 +735,182 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
     } else {
       return 'Votante regular';
     }
+  }
+
+
+
+  // Convertir datos de jerarquía al formato esperado por localidad
+  Map<String, dynamic> _convertToLocalidadFormat(List<Map<String, dynamic>> hierarchyData, [String? filtroTipo]) {
+    final Map<String, Map<String, dynamic>> localidades = {};
+    
+    // Agrupar votantes por localidad
+    for (final votante in hierarchyData) {
+      final ciudadNombre = votante['ciudad_nombre']?.toString();
+      final municipioNombre = votante['municipio_nombre']?.toString();
+      final comunaNombre = votante['comuna_nombre']?.toString();
+      final puestoVotacionNombre = votante['puesto_votacion_nombre']?.toString();
+      
+      // Crear múltiples agrupaciones según el filtro o usar la más específica
+      List<Map<String, String>> agrupaciones = [];
+      
+      if (filtroTipo == null || filtroTipo == 'todos') {
+        // Sin filtro: usar la más específica disponible
+        if (puestoVotacionNombre != null && puestoVotacionNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'puesto_${votante['puesto_votacion_id'] ?? 'unknown'}',
+            'tipo': 'puesto_votacion',
+            'nombre': puestoVotacionNombre,
+            'ciudad': ciudadNombre ?? 'Sin ciudad',
+            'municipio': municipioNombre ?? 'Sin municipio',
+          });
+        } else if (comunaNombre != null && comunaNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'comuna_${votante['comuna_id'] ?? 'unknown'}',
+            'tipo': 'comuna',
+            'nombre': comunaNombre,
+            'ciudad': ciudadNombre ?? 'Sin ciudad',
+            'municipio': municipioNombre ?? 'Sin municipio',
+          });
+        } else if (municipioNombre != null && municipioNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'municipio_${votante['municipio_id'] ?? 'unknown'}',
+            'tipo': 'municipio',
+            'nombre': municipioNombre,
+            'ciudad': ciudadNombre ?? 'Sin ciudad',
+            'municipio': municipioNombre,
+          });
+        } else if (ciudadNombre != null && ciudadNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'ciudad_${votante['ciudad_id'] ?? 'unknown'}',
+            'tipo': 'ciudad',
+            'nombre': ciudadNombre,
+            'ciudad': ciudadNombre,
+            'municipio': 'Sin municipio',
+          });
+        }
+      } else {
+        // Con filtro: agrupar según el tipo solicitado
+        if (filtroTipo == 'puesto' && puestoVotacionNombre != null && puestoVotacionNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'puesto_${votante['puesto_votacion_id'] ?? 'unknown'}',
+            'tipo': 'puesto_votacion',
+            'nombre': puestoVotacionNombre,
+            'ciudad': ciudadNombre ?? 'Sin ciudad',
+            'municipio': municipioNombre ?? 'Sin municipio',
+          });
+        } else if (filtroTipo == 'comuna' && comunaNombre != null && comunaNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'comuna_${votante['comuna_id'] ?? 'unknown'}',
+            'tipo': 'comuna',
+            'nombre': comunaNombre,
+            'ciudad': ciudadNombre ?? 'Sin ciudad',
+            'municipio': municipioNombre ?? 'Sin municipio',
+          });
+        } else if (filtroTipo == 'municipio' && municipioNombre != null && municipioNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'municipio_${votante['municipio_id'] ?? 'unknown'}',
+            'tipo': 'municipio',
+            'nombre': municipioNombre,
+            'ciudad': ciudadNombre ?? 'Sin ciudad',
+            'municipio': municipioNombre,
+          });
+        } else if (filtroTipo == 'ciudad' && ciudadNombre != null && ciudadNombre.isNotEmpty) {
+          agrupaciones.add({
+            'key': 'ciudad_${votante['ciudad_id'] ?? 'unknown'}',
+            'tipo': 'ciudad',
+            'nombre': ciudadNombre,
+            'ciudad': ciudadNombre,
+            'municipio': 'Sin municipio',
+          });
+        }
+      }
+      
+      // Si no hay agrupaciones válidas, crear una por defecto
+      if (agrupaciones.isEmpty) {
+        agrupaciones.add({
+          'key': 'sin_localidad',
+          'tipo': 'sin_localidad',
+          'nombre': 'Sin localidad definida',
+          'ciudad': 'Sin ciudad',
+          'municipio': 'Sin municipio',
+        });
+      }
+      
+      // Agregar el votante a cada agrupación
+      for (final agrupacion in agrupaciones) {
+        final localidadKey = agrupacion['key']!;
+        final tipoLocalidad = agrupacion['tipo']!;
+        final nombreLocalidad = agrupacion['nombre']!;
+        final ciudadFinal = agrupacion['ciudad']!;
+        final municipioFinal = agrupacion['municipio']!;
+        
+        // Inicializar localidad si no existe
+        if (!localidades.containsKey(localidadKey)) {
+          localidades[localidadKey] = {
+            'lideres': [],
+          'votantes': [],
+          'total_votantes': 0,
+          'total_lideres': 0,
+          'tipo': tipoLocalidad,
+          'nombre': nombreLocalidad,
+          'ciudad_nombre': ciudadFinal,
+          'municipio_nombre': municipioFinal,
+          'lider_localidad': {
+            'nombres': 'No tiene líder',
+            'apellidos': '',
+            'identificacion': 'N/A',
+            'nivel_jefe': null,
+          },
+        };
+      }
+      
+      // Agregar votante a la localidad
+      final localidad = localidades[localidadKey]!;
+      final votantesList = localidad['votantes'] as List;
+      
+      // Crear estructura de votante compatible
+      final votanteData = {
+        'id': votante['id'],
+        'identificacion': votante['identificacion'],
+        'nombres': votante['nombres'],
+        'apellidos': votante['apellidos'],
+        'numero_celular': votante['numero_celular'],
+        'email': votante['email'],
+        'pertenencia': votante['pertenencia'] ?? '',
+        'es_jefe': votante['es_jefe'] ?? false,
+        'hierarchy_level': votante['hierarchy_level'] ?? 1,
+        'lider_directo': {
+          'nombres': 'En tu jerarquía',
+          'apellidos': '',
+          'identificacion': 'Nivel ${votante['hierarchy_level'] ?? 1}',
+        },
+      };
+      
+        votantesList.add(votanteData);
+        localidad['total_votantes'] = votantesList.length;
+      }
+    }
+    
+    return {
+      'localidades': localidades,
+      'total_localidades': localidades.length,
+      'total_votantes_jerarquia': hierarchyData.length,
+    };
+  }
+
+  // Widget para los chips de filtro
+  Widget _buildFiltroChip(String valor, String label, ValueNotifier<String> filtroActual) {
+    final isSelected = filtroActual.value == valor;
+    return FilterChip(
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (selected) {
+        if (selected) {
+          filtroActual.value = valor;
+        }
+      },
+      selectedColor: Colors.green.shade200,
+      checkmarkColor: Colors.green.shade700,
+    );
   }
 }
