@@ -5,6 +5,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'jera_vota.dart';
 import 'votantes.dart';
 import 'jerarquia_localidad.dart';
+import 'arbol_screen.dart';
 import 'offline_app.dart';
 import 'profile_screen.dart';
 import 'services/local_storage_service.dart';
@@ -466,26 +467,54 @@ class DashboardScreen extends ConsumerWidget {
   }
 }
 
-class CandidaturaHome extends StatelessWidget {
+class CandidaturaHome extends ConsumerWidget {
   const CandidaturaHome({super.key, required this.candId});
   final String candId;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final api = ref.watch(apiProvider);
+    
     return Scaffold(
       appBar: AppBar(title: const Text('MiVoto - Candidatura')),
-      body: GridView.count(
-        padding: const EdgeInsets.all(16),
-        crossAxisCount: 2,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        children: [
-          _quickCard(context, Icons.account_tree, 'Mi Jerarquía', () => JerarquiaScreen(candId: candId, candName: '')),
-          _quickCard(context, Icons.location_city, 'Jerarquía Localidad', () => JerarquiaLocalidadScreen(candidaturaId: candId, candidaturaName: 'Candidatura')),
-          _quickCard(context, Icons.people, 'Votantes', () => VotantesScreen(candId: candId, candName: '')),
-          _quickCard(context, Icons.event, 'Agendas', () => AgendasScreen(candId: candId)),
-          _quickCard(context, Icons.calendar_today, 'Eventos', () => EventosScreen(candId: candId)),
-        ],
+      body: FutureBuilder<Map<String, dynamic>>(
+        future: api.getJson('/api/me/'),
+        builder: (context, meSnap) {
+          if (meSnap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          
+          Map<String, dynamic>? me = !meSnap.hasError && meSnap.hasData ? meSnap.data : null;
+          final vot = (me != null ? me['votante'] as Map<String, dynamic>? : null);
+          final role = ((vot?['pertenencia']) ?? '').toString().toLowerCase();
+          
+          // Control de acceso para el módulo de agendas
+          final bool canAccessAgendas = (vot?['es_candidato'] == true) || role == 'agendador';
+          
+          // Lista de módulos base
+          List<Widget> modules = [
+            _quickCard(context, Icons.account_tree, 'Mi Jerarquía', () => JerarquiaScreen(candId: candId, candName: '')),
+            _quickCard(context, Icons.park, 'Árbol', () => ArbolScreen(candId: candId, candName: '')),
+            _quickCard(context, Icons.location_city, 'Jerarquía Localidad', () => JerarquiaLocalidadScreen(candidaturaId: candId, candidaturaName: 'Candidatura')),
+            _quickCard(context, Icons.people, 'Votantes', () => VotantesScreen(candId: candId, candName: '')),
+          ];
+          
+          // Solo agregar Agendas si el usuario tiene permisos
+          if (canAccessAgendas) {
+            modules.add(_quickCard(context, Icons.event, 'Agendas', () => AgendasScreen(candId: candId)));
+          }
+          
+          // Eventos disponible para todos
+          modules.add(_quickCard(context, Icons.calendar_today, 'Eventos', () => EventosScreen(candId: candId)));
+          
+          return GridView.count(
+            padding: const EdgeInsets.all(16),
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            children: modules,
+          );
+        },
       ),
     );
   }

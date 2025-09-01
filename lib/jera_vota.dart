@@ -240,11 +240,41 @@ class _JerarquiaScreenState extends ConsumerState<JerarquiaScreen> {
   }
 
   Widget _buildTreeView() {
-    // Organizar por niveles jerárquicos
-          final byLevel = <int, List<Map<String, dynamic>>>{};
+    // Organizar por niveles jerárquicos y luego por líderes
+    final byLevel = <int, Map<String, List<Map<String, dynamic>>>>{};
+    
     for (final votante in _hierarchyData) {
       final level = votante['hierarchy_level'] ?? 1;
-      byLevel.putIfAbsent(level, () => []).add(votante);
+      
+      // Obtener información del líder directo
+      String liderKey = 'Sin líder';
+      String liderNombre = 'Sin líder';
+      
+      if (votante['lideres'] != null && votante['lideres'] is List && (votante['lideres'] as List).isNotEmpty) {
+        final liderIds = votante['lideres'] as List;
+        if (liderIds.isNotEmpty) {
+          final liderId = liderIds.first.toString();
+          
+          // Buscar el líder en los datos de jerarquía
+          final lider = _hierarchyData.firstWhere(
+            (v) => v['id'].toString() == liderId,
+            orElse: () => <String, dynamic>{},
+          );
+          
+          if (lider.isNotEmpty) {
+            final nombres = lider['nombres']?.toString() ?? '';
+            final apellidos = lider['apellidos']?.toString() ?? '';
+            liderNombre = '$nombres $apellidos'.trim();
+            liderKey = '$liderId - $liderNombre';
+          } else {
+            liderKey = 'Líder ID: $liderId';
+            liderNombre = 'Líder ID: $liderId';
+          }
+        }
+      }
+      
+      byLevel.putIfAbsent(level, () => {});
+      byLevel[level]!.putIfAbsent(liderKey, () => []).add(votante);
     }
 
           final levels = byLevel.keys.toList()..sort();
@@ -254,7 +284,8 @@ class _JerarquiaScreenState extends ConsumerState<JerarquiaScreen> {
             itemCount: levels.length,
       itemBuilder: (context, index) {
         final level = levels[index];
-        final votantes = byLevel[level]!;
+        final lideres = byLevel[level]!;
+        final totalVotantes = lideres.values.fold(0, (sum, list) => sum + list.length);
         
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 4),
@@ -273,13 +304,83 @@ class _JerarquiaScreenState extends ConsumerState<JerarquiaScreen> {
               'Nivel $level',
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
-            subtitle: Text('${votantes.length} votantes'),
+            subtitle: Text('$totalVotantes votantes • ${lideres.length} líderes'),
             initiallyExpanded: level <= 2, // Expandir los primeros 2 niveles
-            children: votantes.map((votante) => _buildVotanteTile(votante, level)).toList(),
+            children: _buildLideresForLevel(lideres, level),
           ),
         );
       },
     );
+  }
+
+  List<Widget> _buildLideresForLevel(Map<String, List<Map<String, dynamic>>> lideres, int level) {
+    final widgets = <Widget>[];
+    
+    final liderKeys = lideres.keys.toList()..sort();
+    
+    for (final liderKey in liderKeys) {
+      final votantes = lideres[liderKey]!;
+      final liderNombre = liderKey.contains(' - ') ? liderKey.split(' - ')[1] : liderKey;
+      
+      // Header del líder
+      widgets.add(
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(8),
+            border: Border(
+              left: BorderSide(
+                color: _getLevelColor(level),
+                width: 4,
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.account_tree,
+                color: _getLevelColor(level),
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Líder: $liderNombre',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _getLevelColor(level),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${votantes.length}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      
+      // Votantes bajo este líder
+      for (final votante in votantes) {
+        widgets.add(_buildVotanteTile(votante, level, isUnderLeader: true));
+      }
+    }
+    
+    return widgets;
   }
 
   Widget _buildLocalidadView() {
@@ -313,7 +414,7 @@ class _JerarquiaScreenState extends ConsumerState<JerarquiaScreen> {
     );
   }
 
-  Widget _buildVotanteTile(Map<String, dynamic> votante, int level, {bool showLevel = false}) {
+  Widget _buildVotanteTile(Map<String, dynamic> votante, int level, {bool showLevel = false, bool isUnderLeader = false}) {
     final nombres = votante['nombres']?.toString() ?? 'Sin nombre';
     final apellidos = votante['apellidos']?.toString() ?? 'Sin apellido';
     final identificacion = votante['identificacion']?.toString() ?? 'Sin ID';
@@ -327,7 +428,9 @@ class _JerarquiaScreenState extends ConsumerState<JerarquiaScreen> {
     final comunaNombre = votante['comuna_nombre']?.toString() ?? '';
 
     return Container(
-      margin: EdgeInsets.only(left: showLevel ? 0 : (level - 1) * 16.0),
+      margin: EdgeInsets.only(
+        left: showLevel ? 0 : isUnderLeader ? 32.0 : (level - 1) * 16.0,
+      ),
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: esJefe ? Colors.orange : Colors.blue,
