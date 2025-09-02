@@ -7,6 +7,7 @@ import 'votante_detail.dart';
 import 'offline_app.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'widgets/speech_text_field.dart';
 
 class VotantesScreen extends ConsumerStatefulWidget {
   const VotantesScreen({super.key, required this.candId, required this.candName});
@@ -28,9 +29,45 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
       final api = ref.read(apiProvider);
       final storage = ref.read(storageProvider);
       
-      // Primero cargar datos del usuario
-      _userData = await api.me();
-      final currentUserId = _userData!['id']?.toString() ?? _userData!['votante']?['id']?.toString();
+      String? currentUserId;
+      
+      // Intentar cargar datos del usuario online
+      try {
+        _userData = await api.me();
+        currentUserId = _userData!['id']?.toString() ?? _userData!['votante']?['id']?.toString();
+        
+        // Guardar el ID del usuario para uso offline
+        if (currentUserId != null) {
+          await storage.saveCurrentUserId(currentUserId);
+        }
+      } catch (e) {
+        print('⚠️ No se pudo cargar usuario online, intentando offline...');
+        
+        // Si falla online, intentar cargar desde cache local
+        currentUserId = await storage.getCurrentUserId();
+        
+        if (currentUserId != null) {
+          // Crear userData básico desde datos locales
+          _userData = {
+            'id': currentUserId,
+            'votante': {
+              'id': currentUserId,
+              'es_candidato': true, // Asumir permisos básicos en offline
+              'es_jefe': true,
+            }
+          };
+          print('✅ Usuario cargado desde cache offline: $currentUserId');
+        } else {
+          // Si no hay datos offline, crear userData mínimo
+          _userData = {
+            'votante': {
+              'es_candidato': true, // Permitir funcionalidad básica en offline
+              'es_jefe': true,
+            }
+          };
+          print('⚠️ Sin datos de usuario - usando permisos básicos offline');
+        }
+      }
       
       // Intentar cargar votantes
       try {
@@ -56,24 +93,26 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
         }
         
       } catch (e) {
-        // Si falla, puede ser por permisos jerárquicos
-        if (e.toString().contains('HTML') || e.toString().contains('DOCTYPE')) {
-          // Usar solo datos locales de jerarquía
-          if (currentUserId != null) {
-            _votantes = await storage.getVotantesHierarchy(widget.candId, currentUserId);
-            if (_votantes.isEmpty) {
-              _error = 'No tienes votantes asignados en tu jerarquía aún. Agrega algunos votantes para empezar.';
-            }
-          } else {
-            _error = 'Sin permisos para ver votantes. Solo puedes ver votantes de tu jerarquía.';
-            _votantes = [];
+        print('⚠️ No se pudo cargar votantes online, intentando offline...');
+        
+        // Si falla cargar online, usar datos locales
+        if (currentUserId != null) {
+          _votantes = await storage.getVotantesHierarchy(widget.candId, currentUserId);
+          if (_votantes.isEmpty) {
+            _error = 'No tienes votantes asignados en tu jerarquía aún. Agrega algunos votantes para empezar.';
           }
         } else {
-          rethrow;
+          // Sin currentUserId, cargar todos los votantes offline disponibles
+          final allOfflineVotantes = await storage.getVotantesHierarchy(widget.candId, '');
+          _votantes = allOfflineVotantes;
+          if (_votantes.isEmpty) {
+            _error = 'No hay votantes disponibles offline. Conéctate a internet para sincronizar.';
+          }
         }
       }
     } catch (e) {
-      _error = '$e';
+      print('❌ Error general en _load: $e');
+      _error = 'Error cargando datos. Verifica tu conexión.';
     } finally {
       setState(() { _loading = false; });
     }
@@ -119,27 +158,27 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
   }
 
   bool _canAddVotantes() {
-    if (_userData == null) return false;
+    if (_userData == null) return true; // En offline, permitir agregar votantes
     final votante = _userData!['votante'] as Map<String, dynamic>?;
-    if (votante == null) return false;
+    if (votante == null) return true; // En offline, permitir agregar votantes
     
     // Todos los votantes pueden agregar otros votantes
     return true;
   }
 
   bool _canCreateCredentials() {
-    if (_userData == null) return false;
+    if (_userData == null) return true; // En offline, permitir crear credenciales
     final votante = _userData!['votante'] as Map<String, dynamic>?;
-    if (votante == null) return false;
+    if (votante == null) return true; // En offline, permitir crear credenciales
     
     // Solo jefes o candidatos pueden crear votantes con usuario y contraseña
     return votante['es_candidato'] == true || votante['es_jefe'] == true;
   }
 
   bool _canAssignRoles() {
-    if (_userData == null) return false;
+    if (_userData == null) return true; // En offline, permitir asignar roles
     final votante = _userData!['votante'] as Map<String, dynamic>?;
-    if (votante == null) return false;
+    if (votante == null) return true; // En offline, permitir asignar roles
     
     // Solo candidatos pueden asignar roles
     return votante['es_candidato'] == true;
@@ -429,12 +468,73 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
     }
   }
 
+  Future<void> _saveOffline(Map<String, dynamic> payload, String? currentUserId, LocalStorageService storage) async {
+    // Generar ID temporal para el votante offline
+    final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
+    final offlinePayload = {...payload, 'id': tempId, 'cand_id': widget.candId};
+    
+    print('💾 Guardando votante offline con ID: $tempId');
+    
+    // Agregar a la cola de sincronización
+    final sync = ref.read(syncProvider);
+    await sync.queueVotante(offlinePayload);
+    print('✅ Votante agregado a cola de sincronización');
+    
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    
+    // Agregar inmediatamente a la jerarquía local con ID temporal
+    if (currentUserId != null) {
+      try {
+        await storage.addVotanteToHierarchyWithCandId(offlinePayload, currentUserId, widget.candId);
+        print('✅ Votante agregado a jerarquía local offline');
+      } catch (e) {
+        print('❌ Error agregando a jerarquía local: $e');
+      }
+    }
+    
+    // Mostrar modal de bienvenida
+    _showWelcomeModal(offlinePayload);
+    
+    // Mostrar mensaje de offline
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Guardado offline - Se sincronizará automáticamente cuando haya internet'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 3),
+      )
+    );
+  }
+
   Future<void> _save() async {
     setState(() => _saving = true);
     
     // Obtener ID del usuario actual para la jerarquía
     final storage = ref.read(storageProvider);
-    final currentUserId = await storage.getCurrentUserId();
+    String? currentUserId = await storage.getCurrentUserId();
+    
+    // Si no hay currentUserId guardado, intentar obtenerlo desde la API
+    if (currentUserId == null) {
+      try {
+        final api = ref.read(apiProvider);
+        final userData = await api.me();
+        currentUserId = userData['id']?.toString() ?? userData['votante']?['id']?.toString();
+        // Guardarlo para futuras operaciones offline
+        if (currentUserId != null) {
+          await storage.saveCurrentUserId(currentUserId);
+        }
+      } catch (e) {
+        print('⚠️ No se pudo obtener userData online: $e');
+        // Continuar sin currentUserId específico
+      }
+    }
+    
+    // En modo offline, generar un ID temporal si no hay currentUserId
+    if (currentUserId == null) {
+      currentUserId = 'temp_user_${DateTime.now().millisecondsSinceEpoch}';
+      await storage.saveCurrentUserId(currentUserId);
+      print('⚠️ Generando ID temporal para usuario offline: $currentUserId');
+    }
     
     final payload = {
       'identificacion': _identCtrl.text.trim(),
@@ -465,109 +565,45 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
       'lideres': currentUserId != null ? [currentUserId] : [],
     };
     try {
-      final conn = await Connectivity().checkConnectivity();
-      final online = conn != ConnectivityResult.none;
-      
-      if (online) {
-        // Intentar crear online
-        try {
-          print('🌐 Intentando crear votante online...');
+      // SIEMPRE intentar crear online primero, pero con fallback automático a offline
+      try {
+        print('🌐 Intentando crear votante online...');
         final api = ref.read(apiProvider);
-          final result = await api.votanteCreate(widget.candId, payload);
-          
-          print('✅ Votante creado online exitosamente: ${result['nombres']} ${result['apellidos']}');
-          
-          if (!mounted) return;
-          Navigator.of(context).pop();
-          
-          // Agregar inmediatamente a la jerarquía local con el resultado del servidor
-          if (currentUserId != null) {
-            // Usar el candId actual del widget en lugar de depender del cache
-            await storage.addVotanteToHierarchyWithCandId(result, currentUserId, widget.candId);
-          }
-          
-          // Mostrar modal de bienvenida con datos del servidor
-          _showWelcomeModal(result);
-          
-          // Mostrar mensaje de éxito
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Votante creado exitosamente'))
-          );
-          
-          // IMPORTANTE: NO agregar a pendientes porque se creó exitosamente online
-          print('✅ Votante creado online - NO se agrega a pendientes');
-          
-          // Recargar la lista para asegurar que aparezca el nuevo votante
-          // (esto se hace automáticamente en _openCreate)
-          
-        } catch (e) {
-          print('❌ Error creando online: $e');
-          
-          if (!mounted) return;
-          Navigator.of(context).pop();
-          
-          // Si está online pero falla, mostrar el error real - NO guardar en pendientes
-          String errorMessage = 'Error al crear votante';
-          if (e.toString().contains('404')) {
-            errorMessage = 'Error: Endpoint no encontrado. Verifica permisos.';
-          } else if (e.toString().contains('401') || e.toString().contains('403')) {
-            errorMessage = 'Error: Sin permisos para crear votantes.';
-          } else if (e.toString().contains('HTML instead of JSON')) {
-            errorMessage = 'Error: Problema de autenticación con el servidor.';
-          }
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(errorMessage),
-              backgroundColor: Colors.red,
-              duration: const Duration(seconds: 5),
-            )
-          );
-        }
-      } else {
-        // Sin conexión, guardar offline directamente
-        final sync = ref.read(syncProvider);
-        await sync.queueVotante({...payload, 'cand_id': widget.candId});
+        final result = await api.votanteCreate(widget.candId, payload);
+        
+        print('✅ Votante creado online exitosamente: ${result['nombres']} ${result['apellidos']}');
         
         if (!mounted) return;
         Navigator.of(context).pop();
         
-        // Agregar inmediatamente a la jerarquía local
+        // Agregar inmediatamente a la jerarquía local con el resultado del servidor
         if (currentUserId != null) {
-          await storage.addVotanteToHierarchyWithCandId(payload, currentUserId, widget.candId);
+          await storage.addVotanteToHierarchyWithCandId(result, currentUserId, widget.candId);
         }
         
-        // Mostrar modal de bienvenida
-        _showWelcomeModal(payload);
+        // Mostrar modal de bienvenida con datos del servidor
+        _showWelcomeModal(result);
         
-        // Mostrar mensaje de offline
+        // Mostrar mensaje de éxito
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sin conexión - guardado offline'))
+          const SnackBar(content: Text('Votante creado exitosamente'))
         );
+        
+        print('✅ Votante creado online - NO se agrega a pendientes');
+        
+      } catch (e) {
+        print('❌ Error creando online: $e');
+        print('🔄 FALLBACK AUTOMÁTICO - Guardando offline');
+        
+        // FALLBACK AUTOMÁTICO: Guardar offline SIEMPRE que falle online
+        await _saveOffline(payload, currentUserId, storage);
       }
     } catch (e) {
       print('❌ Error general: $e');
+      print('🔄 Fallback final - guardando offline por error general');
       
-      // Fallback: guardar offline
-      final sync = ref.read(syncProvider);
-      await sync.queueVotante({...payload, 'cand_id': widget.candId});
-      
-      if (mounted) {
-        Navigator.of(context).pop();
-        
-        // Agregar inmediatamente a la jerarquía local
-        if (currentUserId != null) {
-          await storage.addVotanteToHierarchyWithCandId(payload, currentUserId, widget.candId);
-        }
-        
-        // Mostrar modal de bienvenida
-        _showWelcomeModal(payload);
-        
-        // Mostrar mensaje de error
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Error - guardado offline'))
-        );
-      }
+      // Fallback final: usar el método centralizado
+      await _saveOffline(payload, currentUserId, storage);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -744,53 +780,133 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
   }
 
   Future<void> _openWhatsApp(String phoneNumber, String nombre, String? username, String? password) async {
-    // Limpiar el número de teléfono
-    String cleanPhone = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
+    print('🔍 DEBUG WhatsApp - Número original: $phoneNumber');
     
-    // Agregar código de país si no lo tiene (asumiendo Colombia +57)
-    if (!cleanPhone.startsWith('+')) {
-      if (cleanPhone.startsWith('57')) {
-        cleanPhone = '+$cleanPhone';
-      } else if (cleanPhone.length == 10) {
-        cleanPhone = '+57$cleanPhone';
-      } else {
-        cleanPhone = '+$cleanPhone';
+    // Limpiar el número de teléfono (solo números)
+    String cleanPhone = phoneNumber.replaceAll(RegExp(r'[^\d]'), '');
+    print('🔍 DEBUG WhatsApp - Número limpio: $cleanPhone');
+    
+    // Formatear número para WhatsApp (sin + ni espacios)
+    if (cleanPhone.startsWith('57') && cleanPhone.length > 10) {
+      // Ya tiene código de país
+      cleanPhone = cleanPhone;
+    } else if (cleanPhone.length == 10) {
+      // Número colombiano sin código de país
+      cleanPhone = '57$cleanPhone';
+    } else if (cleanPhone.length < 10) {
+      // Número muy corto, agregar código de país
+      cleanPhone = '57$cleanPhone';
+    }
+    
+    print('🔍 DEBUG WhatsApp - Número final: $cleanPhone');
+
+    // Obtener información del usuario actual para personalizar el mensaje
+    String jefeInfo = '';
+    try {
+      final storage = ref.read(storageProvider);
+      final userData = await storage.getUserData();
+      if (userData != null) {
+        String jefeNombre = userData['nombre'] ?? 'Tu líder';
+        String jefeCargo = '';
+        if (userData['es_candidato'] == true) {
+          jefeCargo = 'Candidato';
+        } else if (userData['es_jefe'] == true) {
+          jefeCargo = 'Jefe de equipo';
+        } else {
+          jefeCargo = 'Líder';
+        }
+        jefeInfo = '$jefeNombre ($jefeCargo)';
       }
+    } catch (e) {
+      print('Error obteniendo datos del usuario: $e');
     }
 
-    // Crear mensaje de invitación
+    // Crear mensaje de invitación personalizado
     String message = '¡Hola $nombre! 👋\n\n';
     message += '¡Bienvenido/a a nuestro equipo de campaña! 🎉\n\n';
-    message += 'Has sido agregado/a como votante en nuestra candidatura.\n\n';
+    
+    if (jefeInfo.isNotEmpty) {
+      message += 'Has sido agregado/a por: *$jefeInfo*\n\n';
+    }
+    
+    message += 'Ahora formas parte de nuestra candidatura y podrás colaborar en todas las actividades de campaña.\n\n';
     
     if (username != null && username.isNotEmpty) {
       message += '🔐 *Tus credenciales de acceso:*\n';
-      message += 'Usuario: *$username*\n';
+      message += '• Usuario: *$username*\n';
       if (password != null && password.isNotEmpty) {
-        message += 'Contraseña: *$password*\n';
+        message += '• Contraseña: *$password*\n';
       }
-      message += '\nCon estas credenciales podrás acceder al sistema y colaborar en las actividades de campaña.\n\n';
+      message += '\n📱 *Accede a la plataforma:*\n';
+      message += '• *App móvil:* Descarga desde aquí:\n';
+      message += 'https://drive.google.com/drive/folders/1vNEUeHJGST19OZtuFzu76_knE6XGhpCH?usp=sharing\n\n';
+      message += '• *Plataforma web:* Ingresa desde:\n';
+      message += 'https://mivoto.corpofuturo.org\n\n';
+      message += 'Con estas credenciales podrás acceder tanto desde la app como desde la web para colaborar en las actividades de campaña.\n\n';
     }
     
-    message += '¡Gracias por ser parte de nuestro equipo! 💪';
+    message += '¡Gracias por ser parte de nuestro equipo! 💪\n';
+    message += '¡Juntos vamos a lograr grandes cosas! 🚀';
 
     // Codificar el mensaje para URL
     final encodedMessage = Uri.encodeComponent(message);
     final whatsappUrl = 'https://wa.me/$cleanPhone?text=$encodedMessage';
+    
+    print('🔍 DEBUG WhatsApp - URL generada: $whatsappUrl');
 
     try {
       final uri = Uri.parse(whatsappUrl);
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
+      print('🔍 DEBUG WhatsApp - URI parseada: $uri');
+      
+      // Intentar múltiples métodos de lanzamiento
+      bool launched = false;
+      
+      // Método 1: Intentar con modo externo
+      try {
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          launched = true;
+          print('✅ WhatsApp abierto con modo externo');
+        }
+      } catch (e) {
+        print('❌ Error con modo externo: $e');
+      }
+      
+      // Método 2: Si falla, intentar con modo plataforma
+      if (!launched) {
+        try {
+          await launchUrl(uri, mode: LaunchMode.platformDefault);
+          launched = true;
+          print('✅ WhatsApp abierto con modo plataforma');
+        } catch (e) {
+          print('❌ Error con modo plataforma: $e');
+        }
+      }
+      
+      // Método 3: Intentar URL directa de WhatsApp
+      if (!launched) {
+        try {
+          final directUri = Uri.parse('whatsapp://send?phone=$cleanPhone&text=$encodedMessage');
+          if (await canLaunchUrl(directUri)) {
+            await launchUrl(directUri);
+            launched = true;
+            print('✅ WhatsApp abierto con URL directa');
+          }
+        } catch (e) {
+          print('❌ Error con URL directa: $e');
+        }
+      }
+      
+      if (!launched) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('No se pudo abrir WhatsApp. Número: $cleanPhone'),
+              content: Text('No se pudo abrir WhatsApp. Número: $cleanPhone\nURL: $whatsappUrl'),
+              duration: Duration(seconds: 5),
               action: SnackBarAction(
-                label: 'Copiar',
+                label: 'Copiar URL',
                 onPressed: () {
-                  // Aquí podrías implementar copiar al portapapeles
+                  print('URL para copiar: $whatsappUrl');
                 },
               ),
             ),
@@ -798,9 +914,13 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
         }
       }
     } catch (e) {
+      print('❌ Error general en WhatsApp: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al abrir WhatsApp: $e')),
+          SnackBar(
+            content: Text('Error al abrir WhatsApp: $e\nNúmero: $cleanPhone'),
+            duration: Duration(seconds: 5),
+          ),
         );
       }
     }
@@ -826,14 +946,14 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: _identCtrl, decoration: const InputDecoration(labelText: 'Identificación')),
-            TextField(controller: _nombresCtrl, decoration: const InputDecoration(labelText: 'Nombres')),
-            TextField(controller: _apellidosCtrl, decoration: const InputDecoration(labelText: 'Apellidos')),
-            TextField(controller: _celCtrl, decoration: const InputDecoration(labelText: 'Celular')),
-            TextField(controller: _emailCtrl, decoration: const InputDecoration(labelText: 'Email')),
-            TextField(controller: _direccionCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
-            TextField(controller: _profesionCtrl, decoration: const InputDecoration(labelText: 'Profesión')),
-            TextField(controller: _mesaVotacionCtrl, decoration: const InputDecoration(labelText: 'Mesa de Votación')),
+            SpeechTextField(controller: _identCtrl, labelText: 'Identificación', keyboardType: TextInputType.number, isNumeric: true),
+            SpeechTextField(controller: _nombresCtrl, labelText: 'Nombres'),
+            SpeechTextField(controller: _apellidosCtrl, labelText: 'Apellidos'),
+            SpeechTextField(controller: _celCtrl, labelText: 'Celular', keyboardType: TextInputType.phone, isNumeric: true),
+            SpeechTextField(controller: _emailCtrl, labelText: 'Email', keyboardType: TextInputType.emailAddress),
+            SpeechTextField(controller: _direccionCtrl, labelText: 'Dirección', maxLines: 2),
+            SpeechTextField(controller: _profesionCtrl, labelText: 'Profesión'),
+            SpeechTextField(controller: _mesaVotacionCtrl, labelText: 'Mesa de Votación', keyboardType: TextInputType.number, isNumeric: true),
             DropdownButtonFormField<String>(
               value: _sexo,
               items: _sexos.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
@@ -1029,8 +1149,8 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
               const Text('Credenciales de Acceso', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
               const Text('Solo jefes pueden crear usuarios con acceso al sistema', style: TextStyle(fontSize: 12, color: Colors.grey)),
               const SizedBox(height: 8),
-            TextField(controller: _usernameCtrl, decoration: const InputDecoration(labelText: 'Usuario (opcional)')),
-            TextField(controller: _passwordCtrl, decoration: const InputDecoration(labelText: 'Contraseña (opcional)'), obscureText: true),
+            SpeechTextField(controller: _usernameCtrl, labelText: 'Usuario (opcional)'),
+            SpeechTextField(controller: _passwordCtrl, labelText: 'Contraseña (opcional)'),
             ] else ...[
               const SizedBox(height: 8),
               Container(

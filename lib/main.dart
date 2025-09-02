@@ -295,8 +295,8 @@ class ApiClient {
 }
 
 final apiProvider = Provider<ApiClient>((ref) {
-  // API local para desarrollo
-  const baseUrl = 'http://127.0.0.1:8001';
+  // API de producción
+  const baseUrl = 'https://mivoto.corpofuturo.org';
   final storage = ref.read(storageProvider);
   return ApiClient(baseUrl, storage);
 });
@@ -508,10 +508,10 @@ class CandidaturaHome extends ConsumerWidget {
           modules.add(_quickCard(context, Icons.calendar_today, 'Eventos', () => EventosScreen(candId: candId)));
           
           return GridView.count(
-            padding: const EdgeInsets.all(16),
-            crossAxisCount: 2,
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
+        padding: const EdgeInsets.all(16),
+        crossAxisCount: 2,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
             children: modules,
           );
         },
