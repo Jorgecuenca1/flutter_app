@@ -408,6 +408,7 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
   final _mesaVotacionCtrl = TextEditingController();
   final _usernameCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
+  bool _crearCredenciales = false; // Nueva variable para el checkbox
   int? _ciudadId;
   int? _municipioId;
   int? _comunaId;
@@ -417,6 +418,18 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
   bool _esJefe = false;
   bool _saving = false;
   Map<String, dynamic>? _lookups;
+
+  // Método para auto-llenar credenciales con la identificación
+  void _autoFillCredentials() {
+    if (_crearCredenciales && _identCtrl.text.trim().isNotEmpty) {
+      final identificacion = _identCtrl.text.trim();
+      _usernameCtrl.text = identificacion;
+      _passwordCtrl.text = identificacion;
+    } else if (!_crearCredenciales) {
+      _usernameCtrl.clear();
+      _passwordCtrl.clear();
+    }
+  }
   final _roles = const ['Delegado','Verificado','Publicidad','Logística','Agendador'];
   final _sexos = const ['Masculino', 'Femenino', 'Otro'];
   
@@ -437,6 +450,9 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
   void initState() {
     super.initState();
     _loadLookups();
+    
+    // Agregar listener al campo de identificación para auto-llenar credenciales
+    _identCtrl.addListener(_autoFillCredentials);
   }
 
   Future<void> _loadLookups() async {
@@ -553,8 +569,8 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
       // Opcionales para candidato
       'pertenencia': _rol,
       'es_jefe': _esJefe,
-      'username': widget.canCreateCredentials ? _usernameCtrl.text.trim() : '',
-      'password': widget.canCreateCredentials ? _passwordCtrl.text : '',
+      'username': (widget.canCreateCredentials && _crearCredenciales) ? _usernameCtrl.text.trim() : '',
+      'password': (widget.canCreateCredentials && _crearCredenciales) ? _passwordCtrl.text : '',
       // Campos de jerarquía de liderazgo
       'nivel_jefe': _nivelJefe,
       'jefe_ciudad_id': _jefeCiudadId,
@@ -1149,8 +1165,35 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
               const Text('Credenciales de Acceso', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
               const Text('Solo jefes pueden crear usuarios con acceso al sistema', style: TextStyle(fontSize: 12, color: Colors.grey)),
               const SizedBox(height: 8),
-            SpeechTextField(controller: _usernameCtrl, labelText: 'Usuario (opcional)'),
-            SpeechTextField(controller: _passwordCtrl, labelText: 'Contraseña (opcional)'),
+              
+              // Checkbox para crear credenciales
+              CheckboxListTile(
+                title: const Text('¿Crear credenciales de acceso?'),
+                subtitle: const Text('Usuario y contraseña serán el número de identificación'),
+                value: _crearCredenciales,
+                onChanged: (bool? value) {
+                  setState(() {
+                    _crearCredenciales = value ?? false;
+                    _autoFillCredentials(); // Auto-llenar cuando cambie el checkbox
+                  });
+                },
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+              
+              // Campos de credenciales (solo si está marcado el checkbox)
+              if (_crearCredenciales) ...[
+                const SizedBox(height: 8),
+                SpeechTextField(
+                  controller: _usernameCtrl, 
+                  labelText: 'Usuario',
+                  enabled: false, // Deshabilitado porque se auto-llena
+                ),
+                SpeechTextField(
+                  controller: _passwordCtrl, 
+                  labelText: 'Contraseña',
+                  enabled: false, // Deshabilitado porque se auto-llena
+                ),
+              ],
             ] else ...[
               const SizedBox(height: 8),
               Container(
@@ -1181,6 +1224,22 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _identCtrl.removeListener(_autoFillCredentials);
+    _identCtrl.dispose();
+    _nombresCtrl.dispose();
+    _apellidosCtrl.dispose();
+    _celCtrl.dispose();
+    _emailCtrl.dispose();
+    _direccionCtrl.dispose();
+    _profesionCtrl.dispose();
+    _mesaVotacionCtrl.dispose();
+    _usernameCtrl.dispose();
+    _passwordCtrl.dispose();
+    super.dispose();
   }
 }
 
