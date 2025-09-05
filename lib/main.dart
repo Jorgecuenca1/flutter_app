@@ -9,6 +9,7 @@ import 'arbol_screen.dart';
 import 'offline_app.dart';
 import 'profile_screen.dart';
 import 'services/local_storage_service.dart';
+import 'widgets/cedula_selector_widget.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -747,6 +748,7 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
   final _nombre = TextEditingController();
   final _cedulaEncargado = TextEditingController();
   final _direccion = TextEditingController();
+  Map<String, dynamic>? _encargadoSeleccionado;
   final _telefono = TextEditingController();
   DateTime? _fecha;
   TimeOfDay? _inicio;
@@ -826,7 +828,19 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(controller: _nombre, decoration: const InputDecoration(labelText: 'Nombre de la reunión')),
-            TextField(controller: _cedulaEncargado, decoration: const InputDecoration(labelText: 'Cédula encargado')),
+            const SizedBox(height: 12),
+            CedulaSelectorWidget(
+              controller: _cedulaEncargado,
+              candidaturaId: widget.candId,
+              labelText: 'Cédula del Encargado',
+              hintText: 'Buscar encargado por cédula o nombre...',
+              onVotanteSelected: (votante) {
+                setState(() {
+                  _encargadoSeleccionado = votante;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
             Row(children: [
               Expanded(child: TextField(controller: _direccion, decoration: const InputDecoration(labelText: 'Dirección'))),
               const SizedBox(width: 8),

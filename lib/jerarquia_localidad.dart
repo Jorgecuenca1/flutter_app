@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'main.dart';
-import 'services/local_storage_service.dart';
 import 'offline_app.dart';
+import 'widgets/export_filter_widget.dart';
 
 class JerarquiaLocalidadScreen extends HookConsumerWidget {
   final String candidaturaId;
@@ -26,6 +26,12 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
     final busquedaActual = useState('');
     final userData = useState<Map<String, dynamic>?>(null);
     final filtroLocalidad = useState<String>('todos'); // todos, ciudad, municipio, comuna, puesto
+    
+    // Filtros jerárquicos para localidades
+    final filtroJerarquicoCiudad = useState<int?>(null);
+    final filtroJerarquicoMunicipio = useState<int?>(null);
+    final filtroJerarquicoComuna = useState<int?>(null);
+    final lookupData = useState<Map<String, dynamic>?>(null);
 
     // Cargar datos iniciales
     useEffect(() {
@@ -62,6 +68,19 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
             hierarchyData = await storage.getVotantesHierarchy(candidaturaId, currentUserId);
           }
 
+          // Cargar datos de lookup para filtros jerárquicos
+          try {
+            final lookupsData = await api.lookups();
+            lookupData.value = lookupsData;
+          } catch (e) {
+            // Si falla, intentar cargar desde cache
+            final storage = ref.read(storageProvider);
+            final cachedLookups = await storage.getLookupsData();
+            if (cachedLookups != null) {
+              lookupData.value = cachedLookups;
+            }
+          }
+
           // Convertir jerarquía a formato de localidad
           print('🔍 JERARQUIA LOCALIDAD - Datos de jerarquía recibidos: ${hierarchyData.length} votantes');
           for (final votante in hierarchyData) {
@@ -70,7 +89,13 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
             print('    🔑 Campos disponibles: ${votante.keys.toList()}');
           }
           
-          final localidadData = _convertToLocalidadFormat(hierarchyData, filtroLocalidad.value);
+          final localidadData = _convertToLocalidadFormat(
+            hierarchyData, 
+            filtroLocalidad.value,
+            filtroJerarquicoCiudad.value,
+            filtroJerarquicoMunicipio.value,
+            filtroJerarquicoComuna.value,
+          );
           print('🔍 JERARQUIA LOCALIDAD - Datos convertidos: ${localidadData['total_votantes_jerarquia']} votantes');
           jerarquiaData.value = localidadData;
           
@@ -86,18 +111,24 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
       return null;
     }, []);
 
-    // Escuchar cambios en el filtro de localidad
+    // Escuchar cambios en los filtros de localidad
     useEffect(() {
       if (jerarquiaData.value != null) {
-        // Recalcular datos cuando cambie el filtro
+        // Recalcular datos cuando cambien los filtros
         final storage = ref.read(storageProvider);
         storage.getVotantesHierarchy(candidaturaId, userData.value?['id']?.toString() ?? userData.value?['votante']?['id']?.toString() ?? '').then((hierarchyData) {
-          final localidadData = _convertToLocalidadFormat(hierarchyData, filtroLocalidad.value);
+          final localidadData = _convertToLocalidadFormat(
+            hierarchyData, 
+            filtroLocalidad.value,
+            filtroJerarquicoCiudad.value,
+            filtroJerarquicoMunicipio.value,
+            filtroJerarquicoComuna.value,
+          );
           jerarquiaData.value = localidadData;
         });
       }
       return null;
-    }, [filtroLocalidad.value]);
+    }, [filtroLocalidad.value, filtroJerarquicoCiudad.value, filtroJerarquicoMunicipio.value, filtroJerarquicoComuna.value]);
 
     // Función de búsqueda
     Future<void> _buscarLideres(String busqueda) async {
@@ -304,6 +335,28 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
                 ),
               ),
               const SizedBox(height: 16),
+
+              // Filtros jerárquicos de localidad
+              if (lookupData.value != null) ...[
+                _buildHierarchicalFilters(
+                  lookupData.value!,
+                  filtroJerarquicoCiudad,
+                  filtroJerarquicoMunicipio,
+                  filtroJerarquicoComuna,
+                ),
+                const SizedBox(height: 16),
+              ],
+
+              // Widget de exportación y filtrado
+              if (userData.value != null && jerarquiaData.value != null) ...[
+                ExportFilterWidget(
+                  candidaturaId: candidaturaId,
+                  candidaturaName: candidaturaName,
+                  hierarchyData: jerarquiaData.value?['jerarquia_completa'] ?? [],
+                  userData: userData.value!,
+                ),
+                const SizedBox(height: 16),
+              ],
 
               // Búsqueda por localidad
               Card(
@@ -740,7 +793,13 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
 
 
   // Convertir datos de jerarquía al formato esperado por localidad
-  Map<String, dynamic> _convertToLocalidadFormat(List<Map<String, dynamic>> hierarchyData, [String? filtroTipo]) {
+  Map<String, dynamic> _convertToLocalidadFormat(
+    List<Map<String, dynamic>> hierarchyData, 
+    [String? filtroTipo, 
+    int? filtroCiudadId, 
+    int? filtroMunicipioId, 
+    int? filtroComunaId]
+  ) {
     final Map<String, Map<String, dynamic>> localidades = {};
     
     // Agrupar votantes por localidad
@@ -749,6 +808,16 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
       final municipioNombre = votante['municipio_nombre']?.toString();
       final comunaNombre = votante['comuna_nombre']?.toString();
       final puestoVotacionNombre = votante['puesto_votacion_nombre']?.toString();
+      
+      // Aplicar filtros jerárquicos
+      final ciudadId = votante['ciudad_id'];
+      final municipioId = votante['municipio_id'];
+      final comunaId = votante['comuna_id'];
+      
+      // Si hay filtros jerárquicos activos, aplicarlos
+      if (filtroCiudadId != null && ciudadId != filtroCiudadId) continue;
+      if (filtroMunicipioId != null && municipioId != filtroMunicipioId) continue;
+      if (filtroComunaId != null && comunaId != filtroComunaId) continue;
       
       // Crear múltiples agrupaciones según el filtro o usar la más específica
       List<Map<String, String>> agrupaciones = [];
@@ -895,7 +964,254 @@ class JerarquiaLocalidadScreen extends HookConsumerWidget {
       'localidades': localidades,
       'total_localidades': localidades.length,
       'total_votantes_jerarquia': hierarchyData.length,
+      'jerarquia_completa': hierarchyData, // Agregar jerarquía completa para exportación
     };
+  }
+
+  // Widget para los filtros jerárquicos
+  Widget _buildHierarchicalFilters(
+    Map<String, dynamic> lookups,
+    ValueNotifier<int?> filtroCiudad,
+    ValueNotifier<int?> filtroMunicipio,
+    ValueNotifier<int?> filtroComuna,
+  ) {
+    final ciudades = (lookups['ciudades'] as List?) ?? [];
+    final municipios = (lookups['municipios'] as List?)?.where((m) => 
+      filtroCiudad.value == null || m['ciudad_id'] == filtroCiudad.value
+    ).toList() ?? [];
+    final comunas = (lookups['comunas'] as List?)?.where((c) => 
+      filtroMunicipio.value == null || c['municipio_id'] == filtroMunicipio.value
+    ).toList() ?? [];
+
+    return Card(
+      color: Colors.purple.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.filter_alt, color: Colors.purple.shade700),
+                const SizedBox(width: 8),
+                Text(
+                  'Filtros Jerárquicos de Localidad',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.purple.shade700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Filtra las localidades de forma jerárquica: Ciudad → Municipio → Comuna',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.purple.shade600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            
+            // Filtro por Ciudad
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<int>(
+                    value: filtroCiudad.value,
+                    decoration: InputDecoration(
+                      labelText: '🏙️ Filtrar por Ciudad',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                    items: [
+                      const DropdownMenuItem<int>(
+                        value: null,
+                        child: Text('Todas las ciudades'),
+                      ),
+                      ...ciudades.map<DropdownMenuItem<int>>((ciudad) => 
+                        DropdownMenuItem<int>(
+                          value: ciudad['id'] as int,
+                          child: Text(ciudad['nombre'] as String),
+                        )
+                      ).toList(),
+                    ],
+                    onChanged: (value) {
+                      filtroCiudad.value = value;
+                      // Limpiar filtros dependientes
+                      filtroMunicipio.value = null;
+                      filtroComuna.value = null;
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (filtroCiudad.value != null)
+                  IconButton(
+                    onPressed: () {
+                      filtroCiudad.value = null;
+                      filtroMunicipio.value = null;
+                      filtroComuna.value = null;
+                    },
+                    icon: const Icon(Icons.clear),
+                    tooltip: 'Limpiar filtro de ciudad',
+                  ),
+              ],
+            ),
+            
+            const SizedBox(height: 12),
+            
+            // Filtro por Municipio (solo si hay ciudad seleccionada)
+            if (filtroCiudad.value != null) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: filtroMunicipio.value,
+                      decoration: InputDecoration(
+                        labelText: '🏢 Filtrar por Municipio',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      items: [
+                        const DropdownMenuItem<int>(
+                          value: null,
+                          child: Text('Todos los municipios'),
+                        ),
+                        ...municipios.map<DropdownMenuItem<int>>((municipio) => 
+                          DropdownMenuItem<int>(
+                            value: municipio['id'] as int,
+                            child: Text(municipio['nombre'] as String),
+                          )
+                        ).toList(),
+                      ],
+                      onChanged: (value) {
+                        filtroMunicipio.value = value;
+                        // Limpiar filtros dependientes
+                        filtroComuna.value = null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (filtroMunicipio.value != null)
+                    IconButton(
+                      onPressed: () {
+                        filtroMunicipio.value = null;
+                        filtroComuna.value = null;
+                      },
+                      icon: const Icon(Icons.clear),
+                      tooltip: 'Limpiar filtro de municipio',
+                    ),
+                ],
+              ),
+              
+              const SizedBox(height: 12),
+            ],
+            
+            // Filtro por Comuna (solo si hay municipio seleccionado)
+            if (filtroMunicipio.value != null) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: filtroComuna.value,
+                      decoration: InputDecoration(
+                        labelText: '🏠 Filtrar por Comuna',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      items: [
+                        const DropdownMenuItem<int>(
+                          value: null,
+                          child: Text('Todas las comunas'),
+                        ),
+                        ...comunas.map<DropdownMenuItem<int>>((comuna) => 
+                          DropdownMenuItem<int>(
+                            value: comuna['id'] as int,
+                            child: Text(comuna['nombre'] as String),
+                          )
+                        ).toList(),
+                      ],
+                      onChanged: (value) {
+                        filtroComuna.value = value;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (filtroComuna.value != null)
+                    IconButton(
+                      onPressed: () {
+                        filtroComuna.value = null;
+                      },
+                      icon: const Icon(Icons.clear),
+                      tooltip: 'Limpiar filtro de comuna',
+                    ),
+                ],
+              ),
+            ],
+            
+            // Información de filtros activos
+            if (filtroCiudad.value != null || filtroMunicipio.value != null || filtroComuna.value != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.purple.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.purple.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.purple.shade700, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _getActiveFiltersText(lookups, filtroCiudad.value, filtroMunicipio.value, filtroComuna.value),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.purple.shade700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _getActiveFiltersText(Map<String, dynamic> lookups, int? ciudadId, int? municipioId, int? comunaId) {
+    final List<String> filtros = [];
+    
+    if (ciudadId != null) {
+      final ciudades = (lookups['ciudades'] as List?) ?? [];
+      final ciudad = ciudades.firstWhere((c) => c['id'] == ciudadId, orElse: () => null);
+      if (ciudad != null) {
+        filtros.add('Ciudad: ${ciudad['nombre']}');
+      }
+    }
+    
+    if (municipioId != null) {
+      final municipios = (lookups['municipios'] as List?) ?? [];
+      final municipio = municipios.firstWhere((m) => m['id'] == municipioId, orElse: () => null);
+      if (municipio != null) {
+        filtros.add('Municipio: ${municipio['nombre']}');
+      }
+    }
+    
+    if (comunaId != null) {
+      final comunas = (lookups['comunas'] as List?) ?? [];
+      final comuna = comunas.firstWhere((c) => c['id'] == comunaId, orElse: () => null);
+      if (comuna != null) {
+        filtros.add('Comuna: ${comuna['nombre']}');
+      }
+    }
+    
+    if (filtros.isEmpty) return 'Sin filtros activos';
+    return 'Filtros activos: ${filtros.join(' → ')}';
   }
 
   // Widget para los chips de filtro

@@ -8,6 +8,7 @@ import 'offline_app.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'widgets/speech_text_field.dart';
+import 'widgets/export_filter_widget.dart';
 
 class VotantesScreen extends ConsumerStatefulWidget {
   const VotantesScreen({super.key, required this.candId, required this.candName});
@@ -304,9 +305,23 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
                     ),
                   ),
                 )
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: ListView.separated(
+              : Column(
+                  children: [
+                    // Widget de exportación y filtrado
+                    if (_userData != null && _votantes.isNotEmpty) ...[
+                      ExportFilterWidget(
+                        candidaturaId: widget.candId,
+                        candidaturaName: widget.candName,
+                        hierarchyData: _votantes.cast<Map<String, dynamic>>(),
+                        userData: _userData!,
+                      ),
+                    ],
+                    
+                    // Lista de votantes
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: _load,
+                        child: ListView.separated(
                     physics: const AlwaysScrollableScrollPhysics(),
                     itemCount: _votantes.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
@@ -375,9 +390,12 @@ class _VotantesScreenState extends ConsumerState<VotantesScreen> {
                         onTap: () => _openDetail(v),
                         isThreeLine: true,
                       );
-                    },
+                        },
+                      ),
+                    ),
                   ),
-                ),
+                ],
+              ),
       floatingActionButton: _canAddVotantes()
           ? FloatingActionButton.extended(
         onPressed: _openCreate,

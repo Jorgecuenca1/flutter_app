@@ -4,6 +4,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'main.dart';
 import 'offline_app.dart';
 import 'votante_detail.dart';
+import 'widgets/export_filter_widget.dart';
 
 class ArbolScreen extends HookConsumerWidget {
   const ArbolScreen({super.key, required this.candId, required this.candName});
@@ -189,6 +190,8 @@ class ArbolScreen extends HookConsumerWidget {
         navigateBack,
         candId,
         candName,
+        hierarchyData.value,
+        userData.value,
       ),
     );
   }
@@ -204,6 +207,8 @@ class ArbolScreen extends HookConsumerWidget {
     VoidCallback navigateBack,
     String candId,
     String candName,
+    List<Map<String, dynamic>> hierarchyData,
+    Map<String, dynamic>? userData,
   ) {
     if (isLoading) {
       return const Center(
@@ -317,6 +322,16 @@ class ArbolScreen extends HookConsumerWidget {
             ],
           ),
         ),
+        
+        // Widget de exportación y filtrado (solo en el nodo raíz)
+        if (navigationStack.isEmpty && userData != null) ...[
+          ExportFilterWidget(
+            candidaturaId: candId,
+            candidaturaName: candName,
+            hierarchyData: hierarchyData,
+            userData: userData,
+          ),
+        ],
         
         // Carrusel vertical de votantes
         Expanded(
