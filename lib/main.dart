@@ -10,6 +10,7 @@ import 'offline_app.dart';
 import 'profile_screen.dart';
 import 'services/local_storage_service.dart';
 import 'widgets/cedula_selector_widget.dart';
+import 'widgets/role_specific_selector_widget.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -255,6 +256,32 @@ class ApiClient {
 
   Future<void> agendaCreate(String candId, Map<String, dynamic> payload) async {
     await postJson('/api/candidaturas/' + candId + '/agendas/', payload);
+  }
+
+  // Obtener votantes por rol específico
+  Future<List<Map<String, dynamic>>> getVotantesPorRol(String candId, String rol) async {
+    final response = await getJson('/api/candidaturas/$candId/votantes/?rol=$rol');
+    return (response['votantes'] as List).cast<Map<String, dynamic>>();
+  }
+
+  // Asignar delegado a agenda
+  Future<void> asignarDelegado(String candId, int agendaId, String delegadoId) async {
+    await postJson('/agenda/$candId/$agendaId/delegado/', {
+      'delegado': delegadoId,
+    });
+  }
+
+  // Asignar verificador a agenda
+  Future<void> asignarVerificador(String candId, int agendaId, String verificadorId) async {
+    await postJson('/agenda/$candId/$agendaId/verificador/', {
+      'verificador': verificadorId,
+    });
+  }
+
+  // Obtener agendas
+  Future<List<Map<String, dynamic>>> getAgendas(String candId) async {
+    final response = await getJson('/api/candidaturas/$candId/agendas/');
+    return (response['agendas'] as List).cast<Map<String, dynamic>>();
   }
 
   Future<void> eventoCreate(String candId, Map<String, dynamic> payload) async {
@@ -669,7 +696,7 @@ class AgendasScreen extends ConsumerWidget {
                             onTap: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(
-                                  builder: (_) => AgendaDetailScreen(agenda: a),
+                                  builder: (_) => AgendaDetailScreen(agenda: a, candId: candId),
                                 ),
                               );
                             },
@@ -760,6 +787,14 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
   int _capacidad = 0;
   Map<String, dynamic>? _lookups;
   bool _saving = false;
+  
+  // Responsables
+  String? _delegadoSeleccionado;
+  String? _verificadorSeleccionado;
+  String? _logisticaSeleccionado;
+  final _requerimientosPublicidad = TextEditingController();
+  final _requerimientosLogistica = TextEditingController();
+  bool _showResponsables = false;
 
   @override
   void initState() { super.initState(); _loadLookups(); }
@@ -804,9 +839,32 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
         'hora_final': _fin != null ? _fmtTime(_fin!) : null,
         'privado': _privado,
         'cantidad_personas': _capacidad,
-        'requerimientos_publicidad': '',
-        'requerimientos_logistica': '',
+        'requerimientos_publicidad': _requerimientosPublicidad.text.trim(),
+        'requerimientos_logistica': _requerimientosLogistica.text.trim(),
       });
+      
+      // Asignar responsables si fueron seleccionados
+      if (_delegadoSeleccionado != null || _verificadorSeleccionado != null) {
+        try {
+          // Obtener el ID de la agenda recién creada
+          final agendas = await api.getAgendas(widget.candId);
+          if (agendas.isNotEmpty) {
+            final agendaId = agendas.first['id'] as int;
+            
+            if (_delegadoSeleccionado != null) {
+              await api.asignarDelegado(widget.candId, agendaId, _delegadoSeleccionado!);
+            }
+            
+            if (_verificadorSeleccionado != null) {
+              await api.asignarVerificador(widget.candId, agendaId, _verificadorSeleccionado!);
+            }
+          }
+        } catch (e) {
+          print('Error asignando responsables: $e');
+          // No mostrar error al usuario, la agenda se creó correctamente
+        }
+      }
+      
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -887,7 +945,92 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
               Expanded(child: Slider(value: _capacidad.toDouble(), min: 0, max: 500, divisions: 50, label: 'Cap: $_capacidad', onChanged: (v)=> setState(()=> _capacidad = v.toInt()))),
               Checkbox(value: _privado, onChanged: (v)=> setState(()=> _privado = v ?? false)), const Text('Privado')
             ]),
-            const SizedBox(height: 8),
+            const SizedBox(height: 16),
+            
+            // Sección de Responsables (Expandible)
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.people),
+                    title: const Text('Responsables (Opcional)'),
+                    trailing: Icon(_showResponsables ? Icons.expand_less : Icons.expand_more),
+                    onTap: () => setState(() => _showResponsables = !_showResponsables),
+                  ),
+                  if (_showResponsables) ...[
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        children: [
+                          // Delegado
+                          RoleSpecificSelectorWidget(
+                            candidaturaId: widget.candId,
+                            roleFilter: 'delegado',
+                            labelText: 'Delegado',
+                            hintText: 'Seleccionar delegado...',
+                            onVotanteSelected: (votante) {
+                              setState(() {
+                                _delegadoSeleccionado = votante['id'];
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          
+                          // Verificador
+                          RoleSpecificSelectorWidget(
+                            candidaturaId: widget.candId,
+                            roleFilter: 'verificado',
+                            labelText: 'Verificador',
+                            hintText: 'Seleccionar verificador...',
+                            onVotanteSelected: (votante) {
+                              setState(() {
+                                _verificadorSeleccionado = votante['id'];
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          
+                          // Logística
+                          RoleSpecificSelectorWidget(
+                            candidaturaId: widget.candId,
+                            roleFilter: 'logistica',
+                            labelText: 'Responsable de Logística',
+                            hintText: 'Seleccionar responsable de logística...',
+                            onVotanteSelected: (votante) {
+                              setState(() {
+                                _logisticaSeleccionado = votante['id'];
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          
+                          // Requerimientos
+                          TextField(
+                            controller: _requerimientosPublicidad,
+                            decoration: const InputDecoration(
+                              labelText: 'Requerimientos de Publicidad',
+                              hintText: 'Materiales, equipos, etc.',
+                            ),
+                            maxLines: 2,
+                          ),
+                          const SizedBox(height: 12),
+                          
+                          TextField(
+                            controller: _requerimientosLogistica,
+                            decoration: const InputDecoration(
+                              labelText: 'Requerimientos de Logística',
+                              hintText: 'Sillas, sonido, refrigerios, etc.',
+                            ),
+                            maxLines: 2,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
             FilledButton.icon(onPressed: _saving ? null : _save, icon: const Icon(Icons.save), label: const Text('Crear')),
           ],
         ),
@@ -898,13 +1041,19 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
 
 String _fmtTime(TimeOfDay t) => '${t.hour.toString().padLeft(2,'0')}:${t.minute.toString().padLeft(2,'0')}';
 
-class AgendaDetailScreen extends StatelessWidget {
-  const AgendaDetailScreen({super.key, required this.agenda});
+class AgendaDetailScreen extends ConsumerStatefulWidget {
+  const AgendaDetailScreen({super.key, required this.agenda, required this.candId});
   final Map<String, dynamic> agenda;
+  final String candId;
 
   @override
+  ConsumerState<AgendaDetailScreen> createState() => _AgendaDetailScreenState();
+}
+
+class _AgendaDetailScreenState extends ConsumerState<AgendaDetailScreen> {
+  @override
   Widget build(BuildContext context) {
-    final status = agenda['status']?.toString() ?? 'not_started';
+    final status = widget.agenda['status']?.toString() ?? 'not_started';
     
     // Colores según estado
     Color statusColor;
@@ -930,8 +1079,15 @@ class AgendaDetailScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(agenda['nombre']?.toString() ?? 'Detalle de Agenda'),
+        title: Text(widget.agenda['nombre']?.toString() ?? 'Detalle de Agenda'),
         backgroundColor: statusColor.withOpacity(0.1),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () => _mostrarInfoAgenda(),
+            tooltip: 'Información de la agenda',
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -964,7 +1120,7 @@ class AgendaDetailScreen extends StatelessWidget {
                           ),
                         ),
                         Text(
-                          agenda['nombre']?.toString() ?? '',
+                          widget.agenda['nombre']?.toString() ?? '',
                           style: const TextStyle(fontSize: 16),
                         ),
                       ],
@@ -978,51 +1134,77 @@ class AgendaDetailScreen extends StatelessWidget {
             
             // Información básica
             _buildInfoCard('📅 Fecha y Hora', [
-              _buildInfoRow('Fecha', agenda['fecha'] ?? 'No definida'),
-              _buildInfoRow('Hora inicio', agenda['hora_inicio'] ?? 'No definida'),
-              _buildInfoRow('Hora fin', agenda['hora_final'] ?? 'No definida'),
+              _buildInfoRow('Fecha', widget.agenda['fecha'] ?? 'No definida'),
+              _buildInfoRow('Hora inicio', widget.agenda['hora_inicio'] ?? 'No definida'),
+              _buildInfoRow('Hora fin', widget.agenda['hora_final'] ?? 'No definida'),
             ]),
             
             const SizedBox(height: 16),
             
             // Ubicación
             _buildInfoCard('📍 Ubicación', [
-              _buildInfoRow('Dirección', agenda['direccion'] ?? 'No definida'),
-              _buildInfoRow('Teléfono', agenda['telefono'] ?? 'No definido'),
-              if (agenda['ciudad_nombre'] != null) _buildInfoRow('Ciudad', agenda['ciudad_nombre']),
-              if (agenda['municipio_nombre'] != null) _buildInfoRow('Municipio', agenda['municipio_nombre']),
-              if (agenda['comuna_nombre'] != null) _buildInfoRow('Comuna', agenda['comuna_nombre']),
+              _buildInfoRow('Dirección', widget.agenda['direccion'] ?? 'No definida'),
+              _buildInfoRow('Teléfono', widget.agenda['telefono'] ?? 'No definido'),
+              if (widget.agenda['ciudad_nombre'] != null) _buildInfoRow('Ciudad', widget.agenda['ciudad_nombre']),
+              if (widget.agenda['municipio_nombre'] != null) _buildInfoRow('Municipio', widget.agenda['municipio_nombre']),
+              if (widget.agenda['comuna_nombre'] != null) _buildInfoRow('Comuna', widget.agenda['comuna_nombre']),
             ]),
             
             const SizedBox(height: 16),
             
             // Responsables
-            _buildInfoCard('👥 Responsables', [
-              _buildInfoRow('Encargado', agenda['encargado_nombre'] ?? 'No asignado'),
-              _buildInfoRow('Delegado', agenda['delegado_nombre'] ?? 'No asignado'),
-              _buildInfoRow('Verificador', agenda['verificador_nombre'] ?? 'No asignado'),
-            ]),
+            // Responsables mejorados
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('👥 Responsables', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue)),
+                    const SizedBox(height: 12),
+                    
+                    // Encargado
+                    _buildResponsableRow('🎯 Encargado', widget.agenda['encargado_nombre'] ?? 'No asignado', null),
+                    const Divider(height: 20),
+                    
+                    // Delegado
+                    _buildResponsableRow('🤝 Delegado', widget.agenda['delegado_nombre'] ?? 'No asignado', 
+                      () => _editarResponsable(context, 'delegado', widget.agenda['id'].toString())),
+                    const Divider(height: 20),
+                    
+                    // Verificador
+                    _buildResponsableRow('✅ Verificador', widget.agenda['verificador_nombre'] ?? 'No asignado',
+                      () => _editarResponsable(context, 'verificador', widget.agenda['id'].toString())),
+                    const Divider(height: 20),
+                    
+                    // Logística
+                    _buildResponsableRow('📦 Logística', widget.agenda['logistica_nombre'] ?? 'No asignado',
+                      () => _editarResponsable(context, 'logistica', widget.agenda['id'].toString())),
+                  ],
+                ),
+              ),
+            ),
             
             const SizedBox(height: 16),
             
             // Capacidad y asistentes
             _buildInfoCard('🎯 Capacidad', [
-              _buildInfoRow('Asistentes confirmados', '${agenda['asistentes_count'] ?? 0}'),
-              _buildInfoRow('Capacidad total', '${agenda['cantidad_personas'] ?? 0}'),
+              _buildInfoRow('Asistentes confirmados', '${widget.agenda['asistentes_count'] ?? 0}'),
+              _buildInfoRow('Capacidad total', '${widget.agenda['cantidad_personas'] ?? 0}'),
               _buildInfoRow('Disponibilidad', _getAvailabilityText()),
-              _buildInfoRow('Tipo', agenda['privado'] == true ? 'Privada' : 'Pública'),
+              _buildInfoRow('Tipo', widget.agenda['privado'] == true ? 'Privada' : 'Pública'),
             ]),
             
             const SizedBox(height: 16),
             
             // Requerimientos
-            if ((agenda['requerimientos_publicidad']?.toString() ?? '').isNotEmpty ||
-                (agenda['requerimientos_logistica']?.toString() ?? '').isNotEmpty)
+            if ((widget.agenda['requerimientos_publicidad']?.toString() ?? '').isNotEmpty ||
+                (widget.agenda['requerimientos_logistica']?.toString() ?? '').isNotEmpty)
               _buildInfoCard('📋 Requerimientos', [
-                if ((agenda['requerimientos_publicidad']?.toString() ?? '').isNotEmpty)
-                  _buildInfoRow('Publicidad', agenda['requerimientos_publicidad']),
-                if ((agenda['requerimientos_logistica']?.toString() ?? '').isNotEmpty)
-                  _buildInfoRow('Logística', agenda['requerimientos_logistica']),
+                if ((widget.agenda['requerimientos_publicidad']?.toString() ?? '').isNotEmpty)
+                  _buildInfoRow('Publicidad', widget.agenda['requerimientos_publicidad']),
+                if ((widget.agenda['requerimientos_logistica']?.toString() ?? '').isNotEmpty)
+                  _buildInfoRow('Logística', widget.agenda['requerimientos_logistica']),
               ]),
           ],
         ),
@@ -1084,8 +1266,8 @@ class AgendaDetailScreen extends StatelessWidget {
   }
 
   String _getAvailabilityText() {
-    final asistentes = agenda['asistentes_count'] ?? 0;
-    final capacidad = agenda['cantidad_personas'] ?? 0;
+    final asistentes = widget.agenda['asistentes_count'] ?? 0;
+    final capacidad = widget.agenda['cantidad_personas'] ?? 0;
     
     if (capacidad == 0) return 'Sin límite definido';
     
@@ -1100,6 +1282,131 @@ class AgendaDetailScreen extends StatelessWidget {
     } else {
       return '🟢 Disponible ($porcentaje%)';
     }
+  }
+
+  Widget _buildResponsableRow(String titulo, String nombre, VoidCallback? onEdit) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(titulo, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14)),
+              const SizedBox(height: 4),
+              Text(
+                nombre,
+                style: TextStyle(
+                  color: nombre == 'No asignado' ? Colors.grey : Colors.black87,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (onEdit != null)
+          IconButton(
+            onPressed: onEdit,
+            icon: Icon(
+              nombre == 'No asignado' ? Icons.person_add : Icons.edit,
+              color: Colors.blue,
+            ),
+            tooltip: nombre == 'No asignado' ? 'Asignar' : 'Cambiar',
+          ),
+      ],
+    );
+  }
+
+  void _editarResponsable(BuildContext context, String tipoResponsable, String agendaId) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Asignar ${_getTituloResponsable(tipoResponsable)}'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: RoleSpecificSelectorWidget(
+            candidaturaId: widget.candId,
+            roleFilter: _getRoleFilter(tipoResponsable),
+            labelText: 'Seleccionar ${_getTituloResponsable(tipoResponsable)}',
+            onVotanteSelected: (votante) async {
+              Navigator.of(context).pop();
+              await _asignarResponsable(tipoResponsable, agendaId, votante['id'].toString());
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancelar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getTituloResponsable(String tipo) {
+    switch (tipo) {
+      case 'delegado': return 'Delegado';
+      case 'verificador': return 'Verificador';
+      case 'logistica': return 'Responsable de Logística';
+      default: return tipo;
+    }
+  }
+
+  String _getRoleFilter(String tipo) {
+    switch (tipo) {
+      case 'delegado': return 'delegado';
+      case 'verificador': return 'verificado';
+      case 'logistica': return 'logistica';
+      default: return '';
+    }
+  }
+
+  Future<void> _asignarResponsable(String tipo, String agendaId, String votanteId) async {
+    try {
+      final api = ref.read(apiProvider);
+      
+      switch (tipo) {
+        case 'delegado':
+          await api.asignarDelegado(widget.candId, int.parse(agendaId), votanteId);
+          break;
+        case 'verificador':
+          await api.asignarVerificador(widget.candId, int.parse(agendaId), votanteId);
+          break;
+        case 'logistica':
+          // Por ahora usar el mismo endpoint que delegado hasta que se implemente en el backend
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Funcionalidad de logística en desarrollo')),
+          );
+          return;
+      }
+      
+      // Recargar datos
+      setState(() {});
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${_getTituloResponsable(tipo)} asignado correctamente')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al asignar ${_getTituloResponsable(tipo)}: $e')),
+      );
+    }
+  }
+
+  void _mostrarInfoAgenda() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Información de la Agenda'),
+        content: const Text('La edición completa de agendas estará disponible en una próxima actualización. Por ahora puedes gestionar los responsables usando los botones correspondientes.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

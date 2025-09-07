@@ -139,3 +139,10 @@ María López Rodríguez (Líder)
 ---
 
 **✅ Las mejoras están implementadas y listas para usar. El PDF ahora muestra toda la información jerárquica de forma clara y organizada, sin límites artificiales.**
+
+
+
+
+
+
+

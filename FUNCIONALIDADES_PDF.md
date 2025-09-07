@@ -148,3 +148,10 @@ path_provider: ^2.1.2 # Acceso al sistema de archivos
 4. **Programación de Reportes**: Generar reportes automáticos periódicos
 5. **Gráficos y Estadísticas**: Visualizaciones en los PDFs
 
+
+
+
+
+
+
+

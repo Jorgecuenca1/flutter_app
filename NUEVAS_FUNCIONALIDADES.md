@@ -172,3 +172,10 @@ La aplicación está completamente funcional y lista para ser utilizada por los 
 ---
 
 **📞 Para soporte técnico o dudas sobre el uso, consulta la documentación técnica en `FUNCIONALIDADES_PDF.md`**
+
+
+
+
+
+
+

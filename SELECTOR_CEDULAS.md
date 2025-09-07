@@ -136,3 +136,10 @@ La funcionalidad está **completamente implementada** y lista para ser utilizada
 ---
 
 **💡 Tip**: Esta misma funcionalidad se puede extender fácilmente a otros campos que requieran selección de votantes, como delegados, verificadores, etc.
+
+
+
+
+
+
+

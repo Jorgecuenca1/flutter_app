@@ -426,6 +426,7 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
   final _mesaVotacionCtrl = TextEditingController();
   final _usernameCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
+  final _grupoWhatsAppCtrl = TextEditingController(); // Campo para grupo de WhatsApp
   bool _crearCredenciales = false; // Nueva variable para el checkbox
   int? _ciudadId;
   int? _municipioId;
@@ -751,7 +752,13 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
         actions: [
           if (celular != null && celular.isNotEmpty)
             TextButton.icon(
-              onPressed: () => _openWhatsApp(celular, nombre, hasCredentials ? username : null, hasCredentials ? password : null),
+              onPressed: () => _openWhatsApp(
+                celular, 
+                nombre, 
+                hasCredentials ? username : null, 
+                hasCredentials ? password : null,
+                _grupoWhatsAppCtrl.text.trim().isNotEmpty ? _grupoWhatsAppCtrl.text.trim() : null,
+              ),
               icon: Icon(Icons.message, color: Colors.green[700]),
               label: Text('Invitar por WhatsApp', style: TextStyle(color: Colors.green[700])),
             ),
@@ -813,7 +820,7 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
     );
   }
 
-  Future<void> _openWhatsApp(String phoneNumber, String nombre, String? username, String? password) async {
+  Future<void> _openWhatsApp(String phoneNumber, String nombre, String? username, String? password, String? grupoWhatsApp) async {
     print('🔍 DEBUG WhatsApp - Número original: $phoneNumber');
     
     // Limpiar el número de teléfono (solo números)
@@ -877,6 +884,13 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
       message += '• *Plataforma web:* Ingresa desde:\n';
       message += 'https://mivoto.corpofuturo.org\n\n';
       message += 'Con estas credenciales podrás acceder tanto desde la app como desde la web para colaborar en las actividades de campaña.\n\n';
+    }
+    
+    // Agregar información del grupo de WhatsApp si está disponible
+    if (grupoWhatsApp != null && grupoWhatsApp.isNotEmpty) {
+      message += '📱 *Únete a nuestro grupo de WhatsApp:*\n';
+      message += '$grupoWhatsApp\n\n';
+      message += 'En este grupo podrás mantenerte al día con todas las actividades y coordinaciones del equipo.\n\n';
     }
     
     message += '¡Gracias por ser parte de nuestro equipo! 💪\n';
@@ -988,6 +1002,14 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
             SpeechTextField(controller: _direccionCtrl, labelText: 'Dirección', maxLines: 2),
             SpeechTextField(controller: _profesionCtrl, labelText: 'Profesión'),
             SpeechTextField(controller: _mesaVotacionCtrl, labelText: 'Mesa de Votación', keyboardType: TextInputType.number, isNumeric: true),
+            TextFormField(
+              controller: _grupoWhatsAppCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Grupo de WhatsApp (opcional)',
+                hintText: 'https://chat.whatsapp.com/...',
+              ),
+              keyboardType: TextInputType.url,
+            ),
             DropdownButtonFormField<String>(
               value: _sexo,
               items: _sexos.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
@@ -1257,6 +1279,7 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
     _mesaVotacionCtrl.dispose();
     _usernameCtrl.dispose();
     _passwordCtrl.dispose();
+    _grupoWhatsAppCtrl.dispose();
     super.dispose();
   }
 }
