@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'jera_vota.dart';
@@ -9,6 +10,7 @@ import 'arbol_screen.dart';
 import 'offline_app.dart';
 import 'profile_screen.dart';
 import 'services/local_storage_service.dart';
+import 'screens/map_votantes_screen.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
@@ -255,6 +257,15 @@ class ApiClient {
   Future<void> agendaCreate(String candId, Map<String, dynamic> payload) async {
     await postJson('/api/candidaturas/' + candId + '/agendas/', payload);
   }
+  
+  Future<Map<String, dynamic>> agendaGet(String candId, int agendaId) async {
+    final response = await getJson('/api/candidaturas/$candId/agendas/$agendaId/');
+    return response['agenda'] ?? {};
+  }
+  
+  Future<void> agendaUpdate(String candId, int agendaId, Map<String, dynamic> payload) async {
+    await putJson('/api/candidaturas/$candId/agendas/$agendaId/', payload);
+  }
 
   Future<void> eventoCreate(String candId, Map<String, dynamic> payload) async {
     await postJson('/api/candidaturas/' + candId + '/eventos/', payload);
@@ -267,6 +278,44 @@ class ApiClient {
 
   Future<Map<String, dynamic>> buscarLideresLocalidad(String candidaturaId, String busqueda) async {
     return await getJson('/api/candidaturas/$candidaturaId/buscar-lideres/?busqueda=${Uri.encodeComponent(busqueda)}');
+  }
+
+  Future<List<Map<String, dynamic>>> buscarVotantes(String candId, String query) async {
+    final response = await getJson('/api/candidaturas/$candId/buscar-votantes/?q=${Uri.encodeComponent(query)}');
+    return List<Map<String, dynamic>>.from(response['votantes'] ?? []);
+  }
+  
+  Future<List<Map<String, dynamic>>> getVotantesPorRol(String candId, String rol) async {
+    final response = await getJson('/api/candidaturas/$candId/buscar-votantes-por-rol/?rol=${Uri.encodeComponent(rol)}');
+    return List<Map<String, dynamic>>.from(response['votantes'] ?? []);
+  }
+  
+  Future<List<Map<String, dynamic>>> buscarVotantesPorRol(String candId, String rol, String query) async {
+    final response = await getJson('/api/candidaturas/$candId/buscar-votantes-por-rol/?rol=${Uri.encodeComponent(rol)}&q=${Uri.encodeComponent(query)}');
+    return List<Map<String, dynamic>>.from(response['votantes'] ?? []);
+  }
+  
+  Future<void> asignarDelegado(String candId, int agendaId, String votanteId) async {
+    await putJson('/api/candidaturas/$candId/agendas/$agendaId/', {
+      'delegado_id': votanteId,
+    });
+  }
+  
+  Future<void> asignarVerificador(String candId, int agendaId, String votanteId) async {
+    await putJson('/api/candidaturas/$candId/agendas/$agendaId/', {
+      'verificador_id': votanteId,
+    });
+  }
+  
+  Future<List<Map<String, dynamic>>> getAsistentesAgenda(String candId, int agendaId) async {
+    final response = await getJson('/api/candidaturas/$candId/agendas/$agendaId/asistentes/');
+    return List<Map<String, dynamic>>.from(response['asistentes'] ?? []);
+  }
+  
+  Future<void> agregarAsistente(String candId, int agendaId, String identificacion) async {
+    await postJson('/api/candidaturas/$candId/agendas/$agendaId/asistentes/', {
+      'identificacion': identificacion,
+    });
   }
 
   // Cargar sesión guardada
@@ -295,8 +344,10 @@ class ApiClient {
 }
 
 final apiProvider = Provider<ApiClient>((ref) {
+  // API local para desarrollo
+  const baseUrl = 'http://localhost:8003';
   // API de producción
-  const baseUrl = 'https://mivoto.corpofuturo.org';
+  // const baseUrl = 'https://mivoto.corpofuturo.org';
   final storage = ref.read(storageProvider);
   return ApiClient(baseUrl, storage);
 });
@@ -507,6 +558,9 @@ class CandidaturaHome extends ConsumerWidget {
           // Eventos disponible para todos
           modules.add(_quickCard(context, Icons.calendar_today, 'Eventos', () => EventosScreen(candId: candId)));
           
+          // Mapa de votantes con ubicación
+          modules.add(_quickCard(context, Icons.map, 'Mapa Votantes', () => MapVotantesScreen(candId: candId, candName: '')));
+          
           return GridView.count(
         padding: const EdgeInsets.all(16),
         crossAxisCount: 2,
@@ -668,7 +722,7 @@ class AgendasScreen extends ConsumerWidget {
                             onTap: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(
-                                  builder: (_) => AgendaDetailScreen(agenda: a),
+                                  builder: (_) => AgendaDetailScreen(agenda: a, candId: candId),
                                 ),
                               );
                             },
@@ -737,8 +791,9 @@ class EventosScreen extends ConsumerWidget {
 
 
 class AgendaForm extends ConsumerStatefulWidget {
-  const AgendaForm({super.key, required this.candId});
+  const AgendaForm({super.key, required this.candId, this.agenda});
   final String candId;
+  final Map<String, dynamic>? agenda; // Para edición
   @override
   ConsumerState<AgendaForm> createState() => _AgendaFormState();
 }
@@ -748,6 +803,8 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
   final _cedulaEncargado = TextEditingController();
   final _direccion = TextEditingController();
   final _telefono = TextEditingController();
+  final _requerimientosPublicidad = TextEditingController();
+  final _requerimientosLogistica = TextEditingController();
   DateTime? _fecha;
   TimeOfDay? _inicio;
   TimeOfDay? _fin;
@@ -758,9 +815,144 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
   int _capacidad = 0;
   Map<String, dynamic>? _lookups;
   bool _saving = false;
+  bool get isEditing => widget.agenda != null;
+  
+  // Para el buscador de encargados
+  List<Map<String, dynamic>> _votantesSugeridos = [];
+  Map<String, dynamic>? _encargadoSeleccionado;
+  bool _buscandoVotantes = false;
+  Timer? _debounceTimer;
+  
+  // Nuevos campos para delegado, verificador y logística
+  Map<String, dynamic>? _delegadoSeleccionado;
+  Map<String, dynamic>? _verificadorSeleccionado;
+  Map<String, dynamic>? _logisticaSeleccionado;
+  List<Map<String, dynamic>> _delegadosSugeridos = [];
+  List<Map<String, dynamic>> _verificadoresSugeridos = [];
+  List<Map<String, dynamic>> _logisticaSugeridos = [];
+  bool _buscandoDelegados = false;
+  bool _buscandoVerificadores = false;
+  bool _buscandoLogistica = false;
 
   @override
-  void initState() { super.initState(); _loadLookups(); }
+  void initState() { 
+    super.initState(); 
+    _loadLookups();
+    if (isEditing && widget.agenda != null) {
+      _loadAgendaData();
+    }
+  }
+  
+  void _loadAgendaData() {
+    final agenda = widget.agenda!;
+    _nombre.text = agenda['nombre'] ?? '';
+    _cedulaEncargado.text = agenda['encargado_cedula'] ?? '';
+    // Si hay encargado, guardar su información
+    if (agenda['encargado'] != null) {
+      _encargadoSeleccionado = {
+        'id': agenda['encargado'],
+        'identificacion': agenda['encargado_cedula'],
+        'nombres': agenda['encargado_nombre']?.split(' ').first ?? '',
+        'apellidos': agenda['encargado_nombre']?.split(' ').skip(1).join(' ') ?? '',
+      };
+    }
+    _direccion.text = agenda['direccion'] ?? '';
+    _telefono.text = agenda['telefono'] ?? '';
+    _requerimientosPublicidad.text = agenda['requerimientos_publicidad'] ?? '';
+    _requerimientosLogistica.text = agenda['requerimientos_logistica'] ?? '';
+    _ciudadId = agenda['ciudad'];
+    _municipioId = agenda['municipio'];
+    _comunaId = agenda['comuna'];
+    _capacidad = agenda['cantidad_personas'] ?? 0;
+    _privado = agenda['privado'] ?? false;
+    
+    if (agenda['fecha'] != null) {
+      _fecha = DateTime.tryParse(agenda['fecha']);
+    }
+    if (agenda['hora_inicio'] != null) {
+      final parts = agenda['hora_inicio'].toString().split(':');
+      if (parts.length >= 2) {
+        _inicio = TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+      }
+    }
+    if (agenda['hora_final'] != null) {
+      final parts = agenda['hora_final'].toString().split(':');
+      if (parts.length >= 2) {
+        _fin = TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+      }
+    }
+    
+    // Cargar roles asignados
+    if (agenda['delegado_id'] != null) {
+      _delegadoSeleccionado = {
+        'id': agenda['delegado_id'],
+        'nombres': agenda['delegado_nombre']?.split(' ').first ?? '',
+        'apellidos': agenda['delegado_nombre']?.split(' ').skip(1).join(' ') ?? '',
+      };
+    }
+    if (agenda['verificador_id'] != null) {
+      _verificadorSeleccionado = {
+        'id': agenda['verificador_id'],
+        'nombres': agenda['verificador_nombre']?.split(' ').first ?? '',
+        'apellidos': agenda['verificador_nombre']?.split(' ').skip(1).join(' ') ?? '',
+      };
+    }
+    if (agenda['logistica_id'] != null) {
+      _logisticaSeleccionado = {
+        'id': agenda['logistica_id'],
+        'nombres': agenda['logistica_nombre']?.split(' ').first ?? '',
+        'apellidos': agenda['logistica_nombre']?.split(' ').skip(1).join(' ') ?? '',
+      };
+    }
+  }
+
+  Future<void> _buscarVotantes(String query) async {
+    if (query.isEmpty) {
+      setState(() {
+        _votantesSugeridos = [];
+        _buscandoVotantes = false;
+      });
+      return;
+    }
+    
+    setState(() => _buscandoVotantes = true);
+    
+    try {
+      final api = ref.read(apiProvider);
+      final votantes = await api.buscarVotantes(widget.candId, query);
+      setState(() {
+        _votantesSugeridos = votantes;
+        _buscandoVotantes = false;
+      });
+    } catch (e) {
+      setState(() {
+        _votantesSugeridos = [];
+        _buscandoVotantes = false;
+      });
+    }
+  }
+  
+  void _onCedulaChanged(String value) {
+    // Cancelar el timer anterior si existe
+    _debounceTimer?.cancel();
+    
+    // Reiniciar el encargado seleccionado si el texto cambia
+    if (_encargadoSeleccionado != null && 
+        _encargadoSeleccionado!['identificacion'] != value) {
+      _encargadoSeleccionado = null;
+    }
+    
+    // Crear un nuevo timer para buscar después de 500ms
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+      _buscarVotantes(value);
+    });
+  }
+  
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    super.dispose();
+  }
 
   Future<void> _loadLookups() async {
     try {
@@ -789,11 +981,16 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
     setState(() => _saving = true);
     try {
       final api = ref.read(apiProvider);
-      await api.agendaCreate(widget.candId, {
-        'nombre': _nombre.text.trim(),
-        'cedula_encargado': _cedulaEncargado.text.trim(),
-        'direccion': _direccion.text.trim(),
-        'telefono': _telefono.text.trim(),
+      // Validar que se haya seleccionado un encargado
+      if (_encargadoSeleccionado == null) {
+        throw Exception('Debe seleccionar un encargado para la reunión');
+      }
+      
+      final data = {
+        'nombre': _nombre.text.trim().isEmpty ? null : _nombre.text.trim(),
+        'cedula_encargado': _encargadoSeleccionado!['identificacion'],
+        'direccion': _direccion.text.trim().isEmpty ? null : _direccion.text.trim(),
+        'telefono': _telefono.text.trim().isEmpty ? null : _telefono.text.trim(),
         'ciudad': _ciudadId,
         'municipio': _municipioId,
         'comuna': _comunaId,
@@ -802,9 +999,21 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
         'hora_final': _fin != null ? _fmtTime(_fin!) : null,
         'privado': _privado,
         'cantidad_personas': _capacidad,
-        'requerimientos_publicidad': '',
-        'requerimientos_logistica': '',
-      });
+        'requerimientos_publicidad': _requerimientosPublicidad.text.trim(),
+        'requerimientos_logistica': _requerimientosLogistica.text.trim(),
+        'delegado_id': _delegadoSeleccionado?['id'],
+        'verificador_id': _verificadorSeleccionado?['id'],
+        'logistica_id': _logisticaSeleccionado?['id'],
+      };
+      
+      if (isEditing) {
+        // Actualizar agenda existente
+        await api.agendaUpdate(widget.candId, widget.agenda!['id'], data);
+      } else {
+        // Crear nueva agenda
+        await api.agendaCreate(widget.candId, data);
+      }
+      
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -825,13 +1034,112 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: _nombre, decoration: const InputDecoration(labelText: 'Nombre de la reunión')),
-            TextField(controller: _cedulaEncargado, decoration: const InputDecoration(labelText: 'Cédula encargado')),
+            TextField(
+              controller: _nombre, 
+              decoration: InputDecoration(
+                labelText: 'Nombre de la reunión (Opcional)',
+                helperText: 'Opcional - Ingrese el nombre de la reunión',
+                border: OutlineInputBorder(),
+              )
+            ),
+            const SizedBox(height: 12),
+            // Campo de búsqueda de encargado con autocompletado
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _cedulaEncargado,
+                  onChanged: _onCedulaChanged,
+                  decoration: InputDecoration(
+                    labelText: 'Buscar Encargado (Obligatorio)',
+                    helperText: _encargadoSeleccionado != null
+                        ? 'Seleccionado: ${_encargadoSeleccionado!['nombres']} ${_encargadoSeleccionado!['apellidos']}'
+                        : 'Busque por cédula o nombre del encargado',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.search),
+                    suffixIcon: _buscandoVotantes
+                        ? Container(
+                            width: 20,
+                            height: 20,
+                            padding: EdgeInsets.all(12),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : _encargadoSeleccionado != null
+                            ? Icon(Icons.check_circle, color: Colors.green)
+                            : null,
+                  ),
+                ),
+                if (_votantesSugeridos.isNotEmpty)
+                  Container(
+                    constraints: BoxConstraints(maxHeight: 200),
+                    margin: EdgeInsets.only(top: 4),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _votantesSugeridos.length,
+                      itemBuilder: (context, index) {
+                        final votante = _votantesSugeridos[index];
+                        return ListTile(
+                          dense: true,
+                          title: Text(
+                            '${votante['nombres']} ${votante['apellidos']}',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            'CC: ${votante['identificacion']} - ${votante['ciudad']}',
+                          ),
+                          trailing: votante['pertenencia'] != null
+                              ? Chip(
+                                  label: Text(
+                                    votante['pertenencia'],
+                                    style: TextStyle(fontSize: 11),
+                                  ),
+                                  padding: EdgeInsets.zero,
+                                )
+                              : null,
+                          onTap: () {
+                            setState(() {
+                              _encargadoSeleccionado = votante;
+                              _cedulaEncargado.text = votante['identificacion'];
+                              _votantesSugeridos = [];
+                              
+                              // Auto-rellenar dirección y teléfono si están disponibles
+                              if (votante['direccion'] != null && _direccion.text.isEmpty) {
+                                _direccion.text = votante['direccion'];
+                              }
+                              if (votante['numero_celular'] != null && _telefono.text.isEmpty) {
+                                _telefono.text = votante['numero_celular'];
+                              }
+                            });
+                          },
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
             Row(children: [
-              Expanded(child: TextField(controller: _direccion, decoration: const InputDecoration(labelText: 'Dirección'))),
+              Expanded(child: TextField(
+                controller: _direccion, 
+                decoration: InputDecoration(
+                  labelText: 'Dirección (Opcional)',
+                  border: OutlineInputBorder(),
+                )
+              )),
               const SizedBox(width: 8),
-              Expanded(child: TextField(controller: _telefono, decoration: const InputDecoration(labelText: 'Teléfono'))),
+              Expanded(child: TextField(
+                controller: _telefono, 
+                decoration: InputDecoration(
+                  labelText: 'Teléfono (Opcional)',
+                  border: OutlineInputBorder(),
+                )
+              )),
             ]),
+            const SizedBox(height: 12),
             Row(children: [
               Expanded(child: DropdownButtonFormField<int>(
                 value: _ciudadId,
@@ -873,23 +1181,199 @@ class _AgendaFormState extends ConsumerState<AgendaForm> {
               Expanded(child: Slider(value: _capacidad.toDouble(), min: 0, max: 500, divisions: 50, label: 'Cap: $_capacidad', onChanged: (v)=> setState(()=> _capacidad = v.toInt()))),
               Checkbox(value: _privado, onChanged: (v)=> setState(()=> _privado = v ?? false)), const Text('Privado')
             ]),
-            const SizedBox(height: 8),
-            FilledButton.icon(onPressed: _saving ? null : _save, icon: const Icon(Icons.save), label: const Text('Crear')),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _requerimientosPublicidad,
+              decoration: InputDecoration(
+                labelText: 'Requerimientos de Publicidad (Opcional)',
+                helperText: 'Opcional - Ingrese los requerimientos de publicidad',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _requerimientosLogistica,
+              decoration: InputDecoration(
+                labelText: 'Requerimientos de Logística (Opcional)', 
+                helperText: 'Opcional - Ingrese los requerimientos de logística',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 16),
+            
+            // Sección de Roles Opcionales
+            const Divider(),
+            const Text(
+              'Roles Opcionales',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            
+            // Campo para seleccionar Delegado
+            _buildRoleSelector(
+              'Delegado (Opcional)',
+              _delegadoSeleccionado,
+              _delegadosSugeridos,
+              _buscandoDelegados,
+              'Delegado',
+              (selected) => setState(() => _delegadoSeleccionado = selected),
+              (sugeridos) => setState(() => _delegadosSugeridos = sugeridos),
+              (buscando) => setState(() => _buscandoDelegados = buscando),
+            ),
+            const SizedBox(height: 12),
+            
+            // Campo para seleccionar Verificador
+            _buildRoleSelector(
+              'Verificador (Opcional)',
+              _verificadorSeleccionado,
+              _verificadoresSugeridos,
+              _buscandoVerificadores,
+              'Verificado',
+              (selected) => setState(() => _verificadorSeleccionado = selected),
+              (sugeridos) => setState(() => _verificadoresSugeridos = sugeridos),
+              (buscando) => setState(() => _buscandoVerificadores = buscando),
+            ),
+            const SizedBox(height: 12),
+            
+            // Campo para seleccionar Logística
+            _buildRoleSelector(
+              'Logística (Opcional)',
+              _logisticaSeleccionado,
+              _logisticaSugeridos,
+              _buscandoLogistica,
+              'Logística',
+              (selected) => setState(() => _logisticaSeleccionado = selected),
+              (sugeridos) => setState(() => _logisticaSugeridos = sugeridos),
+              (buscando) => setState(() => _buscandoLogistica = buscando),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _saving ? null : _save, 
+              icon: Icon(isEditing ? Icons.update : Icons.save), 
+              label: Text(isEditing ? 'Actualizar' : 'Crear')
+            ),
           ],
         ),
       ),
+    );
+  }
+  
+  Widget _buildRoleSelector(
+    String label,
+    Map<String, dynamic>? selected,
+    List<Map<String, dynamic>> sugeridos,
+    bool buscando,
+    String rol,
+    Function(Map<String, dynamic>?) onSelect,
+    Function(List<Map<String, dynamic>>) onSugeridosChange,
+    Function(bool) onBuscandoChange,
+  ) {
+    final controller = TextEditingController(
+      text: selected != null ? '${selected['nombres']} ${selected['apellidos']}' : '',
+    );
+    
+    Timer? searchTimer;
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: controller,
+          onChanged: (value) {
+            if (value.isEmpty) {
+              onSelect(null);
+              onSugeridosChange([]);
+              return;
+            }
+            
+            // Cancelar búsqueda anterior
+            searchTimer?.cancel();
+            
+            // Buscar después de 500ms
+            searchTimer = Timer(const Duration(milliseconds: 500), () async {
+              onBuscandoChange(true);
+              try {
+                final api = ref.read(apiProvider);
+                final votantes = await api.buscarVotantesPorRol(widget.candId, rol, value);
+                onSugeridosChange(votantes);
+              } catch (e) {
+                onSugeridosChange([]);
+              } finally {
+                onBuscandoChange(false);
+              }
+            });
+          },
+          decoration: InputDecoration(
+            labelText: label,
+            helperText: selected != null
+                ? 'Seleccionado: ${selected['nombres']} ${selected['apellidos']}'
+                : 'Busque por nombre o cédula',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.search),
+            suffixIcon: buscando
+                ? Container(
+                    width: 20,
+                    height: 20,
+                    padding: EdgeInsets.all(12),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : selected != null
+                    ? IconButton(
+                        icon: Icon(Icons.clear),
+                        onPressed: () {
+                          controller.clear();
+                          onSelect(null);
+                          onSugeridosChange([]);
+                        },
+                      )
+                    : null,
+          ),
+        ),
+        if (sugeridos.isNotEmpty)
+          Container(
+            constraints: BoxConstraints(maxHeight: 150),
+            margin: EdgeInsets.only(top: 4),
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: sugeridos.length,
+              itemBuilder: (context, index) {
+                final votante = sugeridos[index];
+                return ListTile(
+                  dense: true,
+                  title: Text(
+                    '${votante['nombres']} ${votante['apellidos']}',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text('CC: ${votante['identificacion']}'),
+                  onTap: () {
+                    onSelect(votante);
+                    controller.text = '${votante['nombres']} ${votante['apellidos']}';
+                    onSugeridosChange([]);
+                  },
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 }
 
 String _fmtTime(TimeOfDay t) => '${t.hour.toString().padLeft(2,'0')}:${t.minute.toString().padLeft(2,'0')}';
 
-class AgendaDetailScreen extends StatelessWidget {
-  const AgendaDetailScreen({super.key, required this.agenda});
+class AgendaDetailScreen extends ConsumerWidget {
+  const AgendaDetailScreen({super.key, required this.agenda, required this.candId});
   final Map<String, dynamic> agenda;
+  final String candId;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final status = agenda['status']?.toString() ?? 'not_started';
     
     // Colores según estado
@@ -918,6 +1402,43 @@ class AgendaDetailScreen extends StatelessWidget {
       appBar: AppBar(
         title: Text(agenda['nombre']?.toString() ?? 'Detalle de Agenda'),
         backgroundColor: statusColor.withOpacity(0.1),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit),
+            onPressed: () async {
+              final api = ref.read(apiProvider);
+              try {
+                // Cargar los datos completos de la agenda
+                final agendaData = await api.agendaGet(candId, agenda['id']);
+                
+                if (context.mounted) {
+                  final result = await showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (context) => Padding(
+                      padding: EdgeInsets.only(
+                        bottom: MediaQuery.of(context).viewInsets.bottom
+                      ),
+                      child: AgendaForm(candId: candId, agenda: agendaData),
+                    ),
+                  );
+                  
+                  // Si se actualizó, volver a la pantalla anterior para recargar
+                  if (result != null && context.mounted) {
+                    Navigator.of(context).pop(true);
+                  }
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error cargando agenda: $e')),
+                  );
+                }
+              }
+            },
+            tooltip: 'Editar agenda',
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -987,6 +1508,7 @@ class AgendaDetailScreen extends StatelessWidget {
               _buildInfoRow('Encargado', agenda['encargado_nombre'] ?? 'No asignado'),
               _buildInfoRow('Delegado', agenda['delegado_nombre'] ?? 'No asignado'),
               _buildInfoRow('Verificador', agenda['verificador_nombre'] ?? 'No asignado'),
+              _buildInfoRow('Logística', agenda['logistica_nombre'] ?? 'No asignado'),
             ]),
             
             const SizedBox(height: 16),

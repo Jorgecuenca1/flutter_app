@@ -234,6 +234,17 @@ class AgendasScreen extends HookConsumerWidget {
   ) {
     final agendaId = agenda['id'] as int;
     final actions = <Widget>[];
+    
+    // Candidatos y agendadores pueden editar
+    if (isCandidato || userRole == 'agendador') {
+      actions.add(
+        TextButton.icon(
+          icon: const Icon(Icons.edit, size: 16),
+          label: const Text('Editar'),
+          onPressed: () => _showEditAgenda(context, ref, candId, agendaId, onRefresh),
+        ),
+      );
+    }
 
     // Solo jefes de delegado pueden asignar delegados
     if (isJefe && userRole == 'delegado') {
@@ -288,6 +299,30 @@ class AgendasScreen extends HookConsumerWidget {
         child: AgendaForm(candId: candId),
       ),
     ).then((_) => onRefresh());
+  }
+  
+  void _showEditAgenda(BuildContext context, WidgetRef ref, String candId, int agendaId, VoidCallback onRefresh) async {
+    try {
+      final api = ref.read(apiProvider);
+      final agendaData = await api.agendaGet(candId, agendaId);
+      
+      if (context.mounted) {
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          builder: (context) => Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+            child: AgendaForm(candId: candId, agenda: agendaData),
+          ),
+        ).then((_) => onRefresh());
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error cargando agenda: $e')),
+        );
+      }
+    }
   }
 
   void _showAgendaDetail(

@@ -30,6 +30,11 @@ class PdfExportService {
       }).toList();
     }
 
+    // Para conjuntos de datos grandes, limitar la cantidad de datos detallados
+    final bool isLargeDataset = dataToExport.length > 500;
+    final int maxDetailedRecords = isLargeDataset ? 100 : dataToExport.length;
+    final int maxRecordsPerSection = isLargeDataset ? 50 : dataToExport.length;
+
     // Información del usuario actual
     final userVotante = userData['votante'] ?? userData;
     final userName = '${userVotante['nombres'] ?? ''} ${userVotante['apellidos'] ?? ''}'.trim();
@@ -40,36 +45,49 @@ class PdfExportService {
     // Agrupar datos por localidad para el reporte
     final localidadData = _groupByLocalidad(dataToExport);
 
+    // Crear páginas múltiples para manejar grandes cantidades de datos
+    final pages = <pw.Widget>[];
+    
+    // Página 1: Resumen y estadísticas
+    pages.addAll([
+      _buildExecutiveSummary(dataToExport, filtroIdentificacion),
+      pw.SizedBox(height: 20),
+      _buildUserInfo(userData),
+      pw.SizedBox(height: 20),
+      _buildStatistics(dataToExport, localidadData),
+    ]);
+
+    // Solo incluir secciones detalladas si el dataset no es muy grande
+    if (!isLargeDataset) {
+      pages.addAll([
+        pw.SizedBox(height: 20),
+        _buildHierarchyByLevels(dataToExport),
+        pw.SizedBox(height: 20),
+        _buildLocalidadSection(localidadData),
+        pw.SizedBox(height: 20),
+        _buildVotantesList(dataToExport),
+      ]);
+    } else {
+      // Para datasets grandes, mostrar resumen simplificado
+      pages.addAll([
+        pw.SizedBox(height: 20),
+        _buildSimplifiedHierarchy(dataToExport.take(maxDetailedRecords).toList()),
+        pw.SizedBox(height: 20),
+        _buildSimplifiedLocalidades(localidadData, maxRecordsPerSection),
+        pw.SizedBox(height: 20),
+        _buildSimplifiedVotantesList(dataToExport.take(maxDetailedRecords).toList()),
+        pw.SizedBox(height: 20),
+        _buildLargeDatasetNotice(dataToExport.length, maxDetailedRecords),
+      ]);
+    }
+
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(20),
         header: (context) => _buildHeader(candidaturaName, userName, userRole),
         footer: (context) => _buildFooter(context),
-        build: (context) => [
-          // Resumen ejecutivo
-          _buildExecutiveSummary(dataToExport, filtroIdentificacion),
-          pw.SizedBox(height: 20),
-
-          // Información del usuario
-          _buildUserInfo(userData),
-          pw.SizedBox(height: 20),
-
-          // Estadísticas generales
-          _buildStatistics(dataToExport, localidadData),
-          pw.SizedBox(height: 20),
-
-          // Jerarquía por niveles
-          _buildHierarchyByLevels(dataToExport),
-          pw.SizedBox(height: 20),
-
-          // Información por localidades
-          _buildLocalidadSection(localidadData),
-          pw.SizedBox(height: 20),
-
-          // Lista detallada de votantes
-          _buildVotantesList(dataToExport),
-        ],
+        build: (context) => pages,
       ),
     );
 
@@ -303,6 +321,163 @@ class PdfExportService {
     );
   }
 
+  // Nuevos métodos simplificados para datasets grandes
+  pw.Widget _buildSimplifiedHierarchy(List<Map<String, dynamic>> data) {
+    final levelCounts = <int, int>{};
+    
+    for (final votante in data) {
+      final level = votante['hierarchy_level'] ?? 0;
+      levelCounts[level] = (levelCounts[level] ?? 0) + 1;
+    }
+    
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(15),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: PdfColors.grey300),
+        borderRadius: pw.BorderRadius.circular(8),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(
+            'RESUMEN DE JERARQUÍA',
+            style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+          ),
+          pw.SizedBox(height: 10),
+          ...levelCounts.entries.map((entry) => pw.Text(
+            'Nivel ${entry.key}: ${entry.value} votantes',
+            style: const pw.TextStyle(fontSize: 10),
+          )).toList(),
+        ],
+      ),
+    );
+  }
+
+  pw.Widget _buildSimplifiedLocalidades(Map<String, List<Map<String, dynamic>>> localidadData, int maxRecords) {
+    final topLocalidades = localidadData.entries.take(10).toList();
+    
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(15),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: PdfColors.grey300),
+        borderRadius: pw.BorderRadius.circular(8),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(
+            'TOP 10 LOCALIDADES',
+            style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+          ),
+          pw.SizedBox(height: 10),
+          ...topLocalidades.map((entry) => pw.Text(
+            '${entry.key}: ${entry.value.length} votantes',
+            style: const pw.TextStyle(fontSize: 10),
+          )).toList(),
+          if (localidadData.length > 10)
+            pw.Text(
+              '... y ${localidadData.length - 10} localidades más',
+              style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey),
+            ),
+        ],
+      ),
+    );
+  }
+
+  pw.Widget _buildSimplifiedVotantesList(List<Map<String, dynamic>> data) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(15),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: PdfColors.grey300),
+        borderRadius: pw.BorderRadius.circular(8),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(
+            'MUESTRA DE VOTANTES',
+            style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800),
+          ),
+          pw.SizedBox(height: 10),
+          pw.Text(
+            'Mostrando los primeros ${data.length} votantes:',
+            style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey),
+          ),
+          pw.SizedBox(height: 5),
+          ...data.take(20).map((votante) {
+            final nombre = '${votante['nombres'] ?? ''} ${votante['apellidos'] ?? ''}'.trim();
+            final identificacion = votante['identificacion']?.toString() ?? '';
+            final nivel = votante['hierarchy_level']?.toString() ?? '0';
+            return pw.Text(
+              '• $nombre ($identificacion) - Nivel $nivel',
+              style: const pw.TextStyle(fontSize: 9),
+            );
+          }).toList(),
+        ],
+      ),
+    );
+  }
+
+  pw.Widget _buildLargeDatasetNotice(int totalRecords, int shownRecords) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(20),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.amber50,
+        border: pw.Border.all(color: PdfColors.amber, width: 2),
+        borderRadius: pw.BorderRadius.circular(8),
+      ),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Row(
+            children: [
+              pw.Icon(
+                pw.IconData(0xe002),
+                size: 24,
+                color: PdfColors.amber800,
+              ),
+              pw.SizedBox(width: 10),
+              pw.Text(
+                'NOTA IMPORTANTE',
+                style: pw.TextStyle(
+                  fontSize: 14,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColors.amber800,
+                ),
+              ),
+            ],
+          ),
+          pw.SizedBox(height: 10),
+          pw.Text(
+            'Este reporte contiene un total de $totalRecords registros.',
+            style: const pw.TextStyle(fontSize: 11),
+          ),
+          pw.Text(
+            'Para optimizar el tamaño del archivo PDF, se muestra un resumen con los primeros $shownRecords registros.',
+            style: const pw.TextStyle(fontSize: 11),
+          ),
+          pw.SizedBox(height: 10),
+          pw.Text(
+            'Para obtener un reporte completo, considere:',
+            style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold),
+          ),
+          pw.Text(
+            '• Aplicar filtros para reducir la cantidad de datos',
+            style: const pw.TextStyle(fontSize: 10),
+          ),
+          pw.Text(
+            '• Exportar por localidades o niveles específicos',
+            style: const pw.TextStyle(fontSize: 10),
+          ),
+          pw.Text(
+            '• Solicitar reportes parciales por secciones',
+            style: const pw.TextStyle(fontSize: 10),
+          ),
+        ],
+      ),
+    );
+  }
+
   pw.Widget _buildHierarchyByLevels(List<Map<String, dynamic>> data) {
     final levelGroups = <int, List<Map<String, dynamic>>>{};
     
@@ -340,8 +515,8 @@ class PdfExportService {
                   style: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: level == 1 ? PdfColors.green800 : PdfColors.grey800),
                 ),
                 pw.SizedBox(height: 5),
-                // Mostrar TODOS los votantes del nivel
-                ...votantes.map((votante) {
+                // Limitar cantidad de votantes mostrados por nivel
+                ...votantes.take(10).map((votante) {
                   final liderInfo = _getLiderInfo(votante, data);
                   return pw.Padding(
                     padding: const pw.EdgeInsets.only(bottom: 2),
@@ -351,6 +526,11 @@ class PdfExportService {
                     ),
                   );
                 }).toList(),
+                if (votantes.length > 10)
+                  pw.Text(
+                    '  ... y ${votantes.length - 10} más',
+                    style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey),
+                  ),
               ],
             ),
           );
@@ -369,7 +549,7 @@ class PdfExportService {
         ),
         pw.SizedBox(height: 10),
         
-        ...localidadData.entries.take(20).map((entry) {
+        ...localidadData.entries.take(10).map((entry) {
           final localidad = entry.key;
           final votantes = entry.value;
           
@@ -398,8 +578,8 @@ class PdfExportService {
           );
         }).toList(),
         
-        if (localidadData.length > 20)
-          pw.Text('... y ${localidadData.length - 20} localidades más', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey)),
+        if (localidadData.length > 10)
+          pw.Text('... y ${localidadData.length - 10} localidades más', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey)),
       ],
     );
   }
@@ -475,12 +655,15 @@ class PdfExportService {
   }
 
   pw.Widget _buildHierarchicalTable(List<Map<String, dynamic>> data) {
+    // Limitar datos para evitar PDFs muy grandes
+    final limitedData = data.length > 200 ? data.take(200).toList() : data;
+    
     // Organizar datos por jerarquía
     final hierarchyMap = <String, List<Map<String, dynamic>>>{};
     final rootVotantes = <Map<String, dynamic>>[];
     
     // Identificar votantes raíz (nivel 1) y crear mapa de subordinados
-    for (final votante in data) {
+    for (final votante in limitedData) {
       final nivel = votante['hierarchy_level'] ?? 0;
       if (nivel == 1) {
         rootVotantes.add(votante);
@@ -489,7 +672,7 @@ class PdfExportService {
     }
     
     // Agrupar subordinados bajo sus líderes
-    for (final votante in data) {
+    for (final votante in limitedData) {
       final nivel = votante['hierarchy_level'] ?? 0;
       if (nivel > 1) {
         final lideres = votante['lideres'] as List<dynamic>?;
@@ -544,11 +727,25 @@ class PdfExportService {
         }).toList(),
         
         // Mostrar votantes sin líder identificado (si los hay)
-        ...data.where((v) {
+        ...limitedData.where((v) {
           final nivel = v['hierarchy_level'] ?? 0;
           final lideres = v['lideres'] as List<dynamic>?;
           return nivel > 1 && (lideres == null || lideres.isEmpty || !hierarchyMap.containsKey(lideres.first.toString()));
         }).map((votante) => _buildVotanteRow(votante, isOrphan: true)).toList(),
+        
+        if (data.length > 200)
+          pw.Container(
+            margin: const pw.EdgeInsets.only(top: 10),
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.amber50,
+              border: pw.Border.all(color: PdfColors.amber),
+            ),
+            child: pw.Text(
+              'Nota: Se muestran solo los primeros 200 registros de ${data.length} totales para optimizar el tamaño del PDF.',
+              style: const pw.TextStyle(fontSize: 9, color: PdfColors.amber800),
+            ),
+          ),
       ],
     );
   }

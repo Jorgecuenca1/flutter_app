@@ -3,6 +3,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'main.dart';
 import 'services/local_storage_service.dart';
 import 'services/sync_service.dart';
+import 'services/location_service.dart';
 import 'votante_detail.dart';
 import 'offline_app.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -599,6 +600,14 @@ class _VotanteFormState extends ConsumerState<VotanteForm> {
       // Campo para jerarquía: establecer liderazgo
       'lideres': currentUserId != null ? [currentUserId] : [],
     };
+    
+    // Capturar ubicación si es posible
+    final location = await LocationService.getCurrentLocation();
+    if (location != null) {
+      payload['ubicacion'] = location;
+      print('📍 Ubicación capturada: $location');
+    }
+    
     try {
       // SIEMPRE intentar crear online primero, pero con fallback automático a offline
       try {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'main.dart';
 import 'services/local_storage_service.dart';
+import 'services/location_service.dart';
 import 'offline_app.dart';
 
 class VotanteDetailScreen extends ConsumerStatefulWidget {
@@ -33,6 +34,8 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
   final _mesaCtrl = TextEditingController();
   final _usernameCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
+  final _latitudCtrl = TextEditingController();
+  final _longitudCtrl = TextEditingController();
   
   int? _ciudadId;
   int? _municipioId;
@@ -41,6 +44,8 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
   String? _sexo;
   String? _rol;
   bool _esJefe = false;
+  bool _acquiringLocation = false;
+  Map<String, dynamic>? _currentLocation;
   
   // Campos de jerarquía de liderazgo
   String? _nivelJefe;
@@ -123,6 +128,14 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
       _mesaCtrl.text = (_votante!['mesa_votacion'] ?? '').toString();
       _usernameCtrl.text = (_votante!['username'] ?? '').toString();
       
+      // Cargar coordenadas si existen
+      if (_votante!['ubicacion'] != null && _votante!['ubicacion'] is Map) {
+        final ubicacion = _votante!['ubicacion'] as Map<String, dynamic>;
+        _latitudCtrl.text = ubicacion['latitud']?.toString() ?? '';
+        _longitudCtrl.text = ubicacion['longitud']?.toString() ?? '';
+        _currentLocation = ubicacion;
+      }
+      
       _ciudadId = _votante!['ciudad_id'] is int ? _votante!['ciudad_id'] : null;
       _municipioId = _votante!['municipio_id'] is int ? _votante!['municipio_id'] : null;
       _comunaId = _votante!['comuna_id'] is int ? _votante!['comuna_id'] : null;
@@ -187,6 +200,39 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
     }
   }
 
+  Future<void> _acquireLocation() async {
+    setState(() => _acquiringLocation = true);
+    try {
+      final location = await LocationService.getCurrentLocation();
+      if (location != null) {
+        setState(() {
+          _currentLocation = location;
+          _latitudCtrl.text = location['latitud'].toString();
+          _longitudCtrl.text = location['longitud'].toString();
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Ubicación capturada exitosamente')),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No se pudo obtener la ubicación')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al obtener ubicación: $e')),
+        );
+      }
+    } finally {
+      setState(() => _acquiringLocation = false);
+    }
+  }
+
   Future<void> _save() async {
     setState(() => _saving = true);
     final payload = {
@@ -215,6 +261,24 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
       'jefe_comuna_id': _jefeComunaId,
       'jefe_puesto_votacion_id': _jefePuestoVotacionId,
     };
+    
+    // Incluir ubicación si se han editado las coordenadas
+    if (_latitudCtrl.text.isNotEmpty && _longitudCtrl.text.isNotEmpty) {
+      try {
+        final lat = double.parse(_latitudCtrl.text);
+        final lng = double.parse(_longitudCtrl.text);
+        payload['ubicacion'] = {
+          'latitud': lat,
+          'longitud': lng,
+          'precision': _currentLocation?['precision'] ?? 10,
+          'timestamp': DateTime.now().toIso8601String(),
+        };
+        print('Ubicación manual: lat=$lat, lng=$lng');
+      } catch (e) {
+        print('Error parsing coordinates: $e');
+      }
+    }
+    
     try {
       final api = ref.read(apiProvider);
       await api.votanteUpdate(widget.candId, widget.votanteId, payload);
@@ -403,6 +467,77 @@ class _VotanteDetailScreenState extends ConsumerState<VotanteDetailScreen> {
                       comunas.map<DropdownMenuItem<int>>((c) => DropdownMenuItem(value: c['id'] as int, child: Text(c['nombre'] as String))).toList(),
                       (v) => setState(() => _comunaId = v),
                     ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            
+            // Coordenadas GPS
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Coordenadas GPS', style: Theme.of(context).textTheme.titleLarge),
+                        if (_editing)
+                          ElevatedButton.icon(
+                            onPressed: _acquiringLocation ? null : _acquireLocation,
+                            icon: _acquiringLocation 
+                              ? const SizedBox(
+                                  width: 20, 
+                                  height: 20, 
+                                  child: CircularProgressIndicator(strokeWidth: 2)
+                                )
+                              : const Icon(Icons.location_on),
+                            label: Text(_acquiringLocation ? 'Obteniendo...' : 'Adquirir Coordenadas'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildField('Latitud', _latitudCtrl),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: _buildField('Longitud', _longitudCtrl),
+                        ),
+                      ],
+                    ),
+                    if (_currentLocation != null && _currentLocation!['precision'] != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.gps_fixed, size: 16, color: Colors.grey),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Precisión: ${_currentLocation!['precision']} metros',
+                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_currentLocation != null && _currentLocation!['timestamp'] != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.schedule, size: 16, color: Colors.grey),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Capturado: ${_currentLocation!['timestamp']}',
+                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
